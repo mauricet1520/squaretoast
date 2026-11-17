@@ -254,6 +254,19 @@ class AtomicEightySixIT {
     }
 
     @Test
+    void deactivatedItemCannotBeCommitted() {
+        UUID order = f.order(loc, slider, 1);
+        f.exec("update menu_item set active = false where id = ?", slider);
+
+        HttpResponse<String> r = f.commit(order);
+
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(422);
+        assertThat(body(r).get("error").asString()).isEqualTo("ITEM_INACTIVE");
+        assertThat(f.onHand(bun)).isEqualTo(10);
+        assertThat(f.status(order)).isEqualTo("OPEN");
+    }
+
+    @Test
     void anOrderIsCommittedOnlyOnce() {
         UUID order = f.order(loc, slider, 1);
         assertThat(f.commit(order).statusCode()).isEqualTo(200);

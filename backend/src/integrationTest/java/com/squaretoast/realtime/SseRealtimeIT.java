@@ -5,10 +5,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.squaretoast.testsupport.MenuFixture;
 import com.squaretoast.testsupport.SseClient;
 import com.squaretoast.testsupport.SseClient.Event;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -163,6 +168,59 @@ class SseRealtimeIT {
             assertThat(inventory(first, otherBun).get("onHand").asInt()).isEqualTo(4);
             assertThat(first.data().get("inventory")).hasSize(1);
         }
+    }
+
+    /**
+     * Audit finding: the payload was built from a menu read before the location lock, so a change committed in
+     * between was overwritten on clients by a later event claiming the old state. The test holds the location's
+     * event lock (same key as RealtimeEventStore), lets a commit queue on it, changes stock, then releases it.
+     */
+    @Test
+    void broadcastReflectsInventoryAsOfPublishNotAStaleSnapshot() throws Exception {
+        UUID patty = f.trackedInventory(loc, "Patty", 5);
+        f.itemConsumes(burger, patty, 1);
+        UUID order = f.order(loc, slider, 1);
+
+        try (SseClient sse = SseClient.connect(f.baseUrl(), loc, null); Connection holder = dataSource.getConnection()) {
+            locationLock(holder, "pg_advisory_lock");
+            CompletableFuture<Integer> commit;
+            try {
+                commit = CompletableFuture.supplyAsync(() -> f.commit(order).statusCode());
+                awaitAdvisoryWaiter();
+                f.exec("update inventory_item set on_hand = 0 where id = ?", patty);
+            } finally {
+                locationLock(holder, "pg_advisory_unlock");
+            }
+
+            assertThat(commit.get(10, TimeUnit.SECONDS)).isEqualTo(200);
+            Event e = sse.next(WAIT);
+            assertThat(inventory(e, bun).get("onHand").asInt()).isEqualTo(99);
+            assertThat(availability(e, "menuItems", burger)).as("patty is gone, so burger is 86'd").isFalse();
+        }
+    }
+
+    private void locationLock(Connection c, String fn) throws Exception {
+        try (PreparedStatement ps = c.prepareStatement("select " + fn + "(hashtextextended(cast(? as text), 0))")) {
+            ps.setString(1, loc.toString());
+            ps.executeQuery().close();
+        }
+    }
+
+    private void awaitAdvisoryWaiter() throws Exception {
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        try (Connection c = dataSource.getConnection();
+             PreparedStatement ps = c.prepareStatement("select count(*) from pg_locks where locktype = 'advisory' and not granted")) {
+            while (System.nanoTime() < deadline) {
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    if (rs.getLong(1) > 0) {
+                        return;
+                    }
+                }
+                Thread.onSpinWait();
+            }
+        }
+        throw new AssertionError("commit never queued on the location lock");
     }
 
     @Test

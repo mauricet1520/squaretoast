@@ -29,6 +29,14 @@ class TipDistributorTest {
     }
 
     @Test
+    void tieBreakUsesUnsignedIdOrderNotJavaSignedUuidCompare() {
+        UUID high = UUID.fromString("80000000-0000-0000-0000-000000000000");
+        UUID low = UUID.fromString("00000000-0000-0000-0000-000000000001");
+        Map<UUID, Money> out = TipDistributor.distribute(usd(3), List.of(new TipShare(high, 1), new TipShare(low, 1)));
+        assertThat(out).containsEntry(low, usd(2)).containsEntry(high, usd(1));
+    }
+
+    @Test
     void leftoverCentsGoToTheLargestRemainders() {
         // hours x100: 8h and 4h of $10.01 -> 667.33 / 333.67 -> the .67 gets the cent.
         Map<UUID, Money> out = TipDistributor.distribute(usd(1001), List.of(new TipShare(A, 800), new TipShare(B, 400)));

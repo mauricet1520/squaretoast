@@ -16,6 +16,12 @@ import java.util.UUID;
  */
 public final class TipDistributor {
 
+    /**
+     * Unsigned id order (same as Postgres and the canonical hex string). {@link UUID#compareTo} compares signed
+     * longs, which would sort ids starting 8-f before 0-7.
+     */
+    private static final Comparator<UUID> UNSIGNED_ID = Comparator.comparing(UUID::toString);
+
     private TipDistributor() {}
 
     public static Map<UUID, Money> distribute(Money pool, List<TipShare> shares) {
@@ -46,13 +52,13 @@ public final class TipDistributor {
         long leftover = pool.cents() - allocated;
 
         List<Part> byRemainder = new ArrayList<>(parts);
-        byRemainder.sort(Comparator.comparingLong(Part::remainder).reversed().thenComparing(Part::employeeId));
+        byRemainder.sort(Comparator.comparingLong(Part::remainder).reversed().thenComparing(Part::employeeId, UNSIGNED_ID));
         HashSet<UUID> extraCent = new HashSet<>();
         for (int i = 0; i < leftover; i++) {
             extraCent.add(byRemainder.get(i).employeeId());
         }
 
-        parts.sort(Comparator.comparing(Part::employeeId));
+        parts.sort(Comparator.comparing(Part::employeeId, UNSIGNED_ID));
         Map<UUID, Money> out = new LinkedHashMap<>();
         for (Part p : parts) {
             out.put(p.employeeId(), Money.ofCents(p.base() + (extraCent.contains(p.employeeId()) ? 1 : 0), pool.currency()));

@@ -1,0 +1,18 @@
+[versions]
+spring-boot = "4.0.0"
+errorprone = "2.42.0"
+errorprone-plugin = "4.3.0"
+nullaway = "0.12.10"
+jspecify = "1.0.0"
+archunit = "1.4.1"
+
+[libraries]
+spring-boot-bom = { module = "org.springframework.boot:spring-boot-dependencies", version.ref = "spring-boot" }
+errorprone-core = { module = "com.google.errorprone:error_prone_core", version.ref = "errorprone" }
+nullaway = { module = "com.uber.nullaway:nullaway", version.ref = "nullaway" }
+jspecify = { module = "org.jspecify:jspecify", version.ref = "jspecify" }
+archunit = { module = "com.tngtech.archunit:archunit-junit5", version.ref = "archunit" }
+errorprone-gradle-plugin = { module = "net.ltgt.gradle:gradle-errorprone-plugin", version.ref = "errorprone-plugin" }
+
+[plugins]
+spring-boot = { id = "org.springframework.boot", version.ref = "spring-boot" }

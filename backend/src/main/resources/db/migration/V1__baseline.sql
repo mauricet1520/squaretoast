@@ -75,11 +75,34 @@ create table location (
     created_at                      timestamptz not null default now()
 );
 
+create function enforce_state_tip_credit_revocation() returns trigger language plpgsql as $$
+begin
+    if not new.tip_credit_allowed and exists (select 1 from location
+                                              where state_code = new.state_code and uses_tip_credit) then
+        raise exception 'state % still has locations taking a tip credit', new.state_code
+            using errcode = 'check_violation';
+    end if;
+    return new;
+end $$;
+
+create trigger state_tip_credit_revocation before update on state_compliance_profile
+    for each row execute function enforce_state_tip_credit_revocation();
+
+-- BOH-in-pool check references tip_pool/tip_pool_member/employee, created later in this migration;
+-- plpgsql resolves names at execution time.
 create function enforce_location_tip_credit() returns trigger language plpgsql as $$
 begin
     if new.uses_tip_credit and not (select tip_credit_allowed from state_compliance_profile
                                     where state_code = new.state_code) then
         raise exception 'state % does not allow a tip credit', new.state_code using errcode = 'check_violation';
+    end if;
+    if tg_op = 'UPDATE' and new.uses_tip_credit and not old.uses_tip_credit and exists (
+            select 1 from tip_pool p
+            join tip_pool_member m on m.pool_id = p.id
+            join employee e on e.id = m.employee_id
+            where p.location_id = new.id and p.period_end > now() and (m.boh_snapshot or e.boh)) then
+        raise exception 'location % has BOH staff in an open tip pool; cannot start taking a tip credit', new.id
+            using errcode = 'check_violation';
     end if;
     return new;
 end $$;
@@ -278,10 +301,23 @@ create table check_allocation (
     check (numerator <= denominator)
 );
 
+create function enforce_allocation_same_order() returns trigger language plpgsql as $$
+begin
+    if (select order_id from guest_check where id = new.check_id)
+       is distinct from (select order_id from order_line where id = new.order_line_id) then
+        raise exception 'check % and order_line % belong to different orders', new.check_id, new.order_line_id
+            using errcode = 'check_violation';
+    end if;
+    return new;
+end $$;
+
+create trigger check_allocation_same_order before insert or update on check_allocation
+    for each row execute function enforce_allocation_same_order();
+
 -- Exact rational sum per order line must be 1 (if the line is allocated at all).
-create function enforce_whole_line_allocation() returns trigger language plpgsql as $$
+-- An allocated line may return to zero rows (fully un-split back to the order).
+create function assert_whole_line(line uuid) returns void language plpgsql as $$
 declare
-    line uuid := coalesce(new.order_line_id, old.order_line_id);
     n bigint := 0;
     d bigint := 1;
     g bigint;
@@ -299,6 +335,16 @@ begin
     if cnt > 0 and n <> d then
         raise exception 'allocations for order_line % sum to %/% (must be exactly 1)', line, n, d
             using errcode = 'check_violation';
+    end if;
+end $$;
+
+create function enforce_whole_line_allocation() returns trigger language plpgsql as $$
+begin
+    if tg_op in ('INSERT', 'UPDATE') then
+        perform assert_whole_line(new.order_line_id);
+    end if;
+    if tg_op = 'DELETE' or (tg_op = 'UPDATE' and old.order_line_id <> new.order_line_id) then
+        perform assert_whole_line(old.order_line_id);
     end if;
     return null;
 end $$;
@@ -362,6 +408,21 @@ create trigger journal_line_no_truncate before truncate on journal_line
     for each statement execute function reject_append_only_mutation();
 create trigger course_transition_append_only before update or delete on course_transition
     for each row execute function reject_append_only_mutation();
+create trigger course_transition_no_truncate before truncate on course_transition
+    for each statement execute function reject_append_only_mutation();
+
+create function enforce_journal_txn_has_lines() returns trigger language plpgsql as $$
+begin
+    if (select count(*) from journal_line where txn_id = new.id) < 2 then
+        raise exception 'journal txn % needs at least two lines', new.id using errcode = 'check_violation';
+    end if;
+    return null;
+end $$;
+
+create constraint trigger journal_txn_has_lines
+    after insert on journal_txn
+    deferrable initially deferred
+    for each row execute function enforce_journal_txn_has_lines();
 
 create function enforce_balanced_journal() returns trigger language plpgsql as $$
 declare
@@ -427,17 +488,33 @@ create table tip_pool_member (
     check (not (owner_equity_bps_snapshot >= 2000 and owner_active_mgmt_snapshot))
 );
 
-create function enforce_boh_tip_credit() returns trigger language plpgsql as $$
+-- Eligibility is judged on the authoritative employee row as well as the snapshot:
+-- a caller cannot launder a manager/supervisor/owner/BOH into a pool via false snapshot values.
+create function enforce_tip_pool_eligibility() returns trigger language plpgsql as $$
+declare
+    e employee%rowtype;
+    pool_location uuid;
+    tip_credit boolean;
 begin
-    if new.boh_snapshot and (select l.uses_tip_credit from tip_pool p join location l on l.id = p.location_id
-                             where p.id = new.pool_id) then
+    select * into e from employee where id = new.employee_id;
+    select p.location_id, l.uses_tip_credit into pool_location, tip_credit
+    from tip_pool p join location l on l.id = p.location_id where p.id = new.pool_id;
+
+    if e.location_id <> pool_location then
+        raise exception 'employee % does not work at the pool''s location', e.id using errcode = 'check_violation';
+    end if;
+    if e.is_manager or e.is_supervisor or (e.owner_equity_bps >= 2000 and e.owner_active_mgmt) then
+        raise exception 'employee % is a manager, supervisor or 20%%+ active owner; FLSA bars tip pool membership', e.id
+            using errcode = 'check_violation';
+    end if;
+    if (new.boh_snapshot or e.boh) and tip_credit then
         raise exception 'BOH staff cannot join a tip pool at a tip-credit location' using errcode = 'check_violation';
     end if;
     return new;
 end $$;
 
-create trigger tip_pool_member_boh before insert or update on tip_pool_member
-    for each row execute function enforce_boh_tip_credit();
+create trigger tip_pool_member_eligibility before insert or update on tip_pool_member
+    for each row execute function enforce_tip_pool_eligibility();
 
 -- =====================================================================
 -- Idempotency, offline claims, realtime replay

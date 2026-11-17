@@ -1,7 +1,13 @@
 package com.squaretoast.domain.money;
 
+import java.util.Objects;
+
 /** Money as a signed {@code long} count of minor units (cents) in one ISO-4217 currency. Overflow throws. */
 public record Money(long cents, CurrencyCode currency) {
+
+    public Money {
+        Objects.requireNonNull(currency, "currency");
+    }
 
     public static Money ofCents(long cents, CurrencyCode currency) {
         return new Money(cents, currency);

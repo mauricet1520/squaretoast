@@ -2,7 +2,6 @@ package com.squaretoast.order;
 
 import com.squaretoast.domain.menu.InvalidModifierSelectionException;
 import com.squaretoast.domain.menu.InventoryDemand;
-import com.squaretoast.domain.menu.InventoryLevel;
 import com.squaretoast.domain.menu.LineDemand;
 import com.squaretoast.domain.menu.MenuItem;
 import com.squaretoast.domain.menu.ModifierSelection;
@@ -53,25 +52,22 @@ public class OrderCommitService {
         LocationMenu menu = menus.load(location).orElseThrow();
 
         SortedMap<UUID, Long> demand = InventoryDemand.of(lines(orderId, menu));
-        Map<UUID, InventoryLevel> levels = new HashMap<>(menu.levels());
         for (Map.Entry<UUID, Long> d : demand.entrySet()) {
-            Optional<InventoryLevel> after = jdbc.sql("""
+            int updated = jdbc.sql("""
                     update inventory_item
                     set on_hand = case when tracked then on_hand - :qty else on_hand end, version = version + 1
-                    where id = :id and location_id = :loc and not manually_86ed and (not tracked or on_hand >= :qty)
-                    returning id, tracked, on_hand, manually_86ed""")
+                    where id = :id and location_id = :loc and not manually_86ed and (not tracked or on_hand >= :qty)""")
                     .param("qty", d.getValue()).param("id", d.getKey()).param("loc", location)
-                    .query(MenuRepository.LEVEL).optional();
-            if (after.isEmpty()) {
+                    .update();
+            if (updated == 0) {
                 boolean manual = jdbc.sql("select manually_86ed from inventory_item where id = ? and location_id = ?")
                         .params(d.getKey(), location).query(Boolean.class).optional().orElse(false);
                 throw new CommitException.Conflict(manual ? "ITEM_86ED" : "OVERSOLD", d.getKey());
             }
-            levels.put(d.getKey(), after.get());
         }
         if (!demand.isEmpty()) {
             realtime.publish(location, AvailabilityEvents.TOPIC,
-                    AvailabilityEvents.payload(menu.withLevels(levels), demand.keySet()));
+                    () -> AvailabilityEvents.payload(menus.load(location).orElseThrow(), demand.keySet()));
         }
     }
 
@@ -95,6 +91,9 @@ public class OrderCommitService {
         for (Line line : lines) {
             MenuItem item = menu.item(line.menuItemId())
                     .orElseThrow(() -> new CommitException.Rejected("ITEM_NOT_AT_LOCATION", null));
+            if (!item.active()) {
+                throw new CommitException.Rejected("ITEM_INACTIVE", null);
+            }
             List<UUID> options = chosen.getOrDefault(line.id(), List.of());
             try {
                 ModifierSelection.validate(item, options);

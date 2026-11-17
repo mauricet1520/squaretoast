@@ -29,8 +29,8 @@ public class EightySixService {
         if (updated == 0) {
             return false;
         }
-        LocationMenu menu = menus.load(location).orElseThrow();
-        realtime.publish(location, AvailabilityEvents.TOPIC, AvailabilityEvents.payload(menu, Set.of(inventory)));
+        realtime.publish(location, AvailabilityEvents.TOPIC,
+                () -> AvailabilityEvents.payload(menus.load(location).orElseThrow(), Set.of(inventory)));
         return true;
     }
 }

@@ -19,12 +19,17 @@ class RealtimeEventStore {
     }
 
     /**
-     * Appends inside the caller's transaction. The per-location advisory lock is held until commit, so events of
-     * one location commit in seq order and a reader never sees seq N+1 before N.
+     * Takes the per-location event lock for the rest of the caller's transaction. Events of one location then
+     * commit in seq order (a reader never sees seq N+1 before N), and whatever the caller reads after this call
+     * includes every earlier publisher's committed changes.
      */
-    long append(UUID location, String topic, String json) {
+    void lockLocation(UUID location) {
         jdbc.sql("select pg_advisory_xact_lock(hashtextextended(cast(? as text), 0))").param(location.toString())
                 .query((rs, n) -> n).list();
+    }
+
+    /** Call only after {@link #lockLocation} in the same transaction. */
+    long append(UUID location, String topic, String json) {
         return jdbc.sql("insert into realtime_event(location_id, topic, payload) values (?, ?, cast(? as jsonb)) returning seq")
                 .params(location, topic, json).query(Long.class).single();
     }

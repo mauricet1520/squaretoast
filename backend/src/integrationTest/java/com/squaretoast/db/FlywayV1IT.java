@@ -24,6 +24,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 class FlywayV1IT {
 
     private static final String CHECK_VIOLATION = "23514";
+    private static final String FK_VIOLATION = "23503";
 
     @Container
     static final PostgreSQLContainer PG = new PostgreSQLContainer("postgres:17-alpine");
@@ -267,6 +268,86 @@ class FlywayV1IT {
     void appendOnlyTablesCannotBeTruncated() {
         assertRejected(CHECK_VIOLATION, "truncate course_transition");
         assertRejected(CHECK_VIOLATION, "truncate journal_line");
+    }
+
+    // ---------- slice-1 follow-ups: currency allowlist ----------
+
+    @Test
+    void everyCurrencyColumnReferencesTheCurrencyAllowlist() throws SQLException {
+        List<String> currencyColumns = column("""
+                select table_name || '.' || column_name from information_schema.columns
+                where table_schema = 'public' and column_name = 'currency'""");
+        List<String> referencing = column("""
+                select c.conrelid::regclass::text || '.' || a.attname
+                from pg_constraint c join pg_attribute a on a.attrelid = c.conrelid and a.attnum = any (c.conkey)
+                where c.contype = 'f' and c.confrelid = 'public.currency'::regclass""");
+        assertThat(currencyColumns).isNotEmpty();
+        assertThat(referencing).containsExactlyInAnyOrderElementsOf(currencyColumns);
+    }
+
+    @Test
+    void currenciesOutsideTheAllowlistAreRejected() throws SQLException {
+        UUID loc = location("MA", false); // default USD is allowed
+        assertRejected(FK_VIOLATION, "update location set currency = 'ZZZ' where id = '" + loc + "'");
+        assertRejected(FK_VIOLATION, "update location set currency = 'JPY' where id = '" + loc + "'");
+        UUID txn = UUID.randomUUID();
+        assertRejected(FK_VIOLATION, journalTxnSql(txn, loc),
+                lineSql(txn, "SALES", -100).replace("'USD'", "'ZZZ'"),
+                lineSql(txn, "MERCHANT_CASH", 100).replace("'USD'", "'ZZZ'"));
+        // the allowlist itself only admits currencies whose minor unit is cents
+        assertRejected(CHECK_VIOLATION, "insert into currency(code, minor_digits) values ('JPY', 0)");
+    }
+
+    // ---------- slice-1 follow-ups: closed pools are frozen ----------
+
+    @Test
+    void closedTipPoolMembershipIsFrozen() throws SQLException {
+        UUID loc = location("MA", false);
+        UUID pool = tipPool(loc);
+        exec(member(pool, employee(loc), false, false, 0, false, false));
+        exec("update tip_pool_member set hours_x100 = 800 where pool_id = '" + pool + "'"); // open: editable
+        exec("update tip_pool set closed_at = now() where id = '" + pool + "'");
+
+        assertRejected(CHECK_VIOLATION, "update tip_pool_member set hours_x100 = 999 where pool_id = '" + pool + "'");
+        assertRejected(CHECK_VIOLATION, "delete from tip_pool_member where pool_id = '" + pool + "'");
+        assertRejected(CHECK_VIOLATION, member(pool, employee(loc), false, false, 0, false, false));
+        assertRejected(CHECK_VIOLATION, "update tip_pool set closed_at = null where id = '" + pool + "'");
+        assertRejected(CHECK_VIOLATION,
+                "update tip_pool set period_end = period_end + interval '1 day' where id = '" + pool + "'");
+        assertRejected(CHECK_VIOLATION, "truncate tip_pool_member");
+    }
+
+    // ---------- slice-1 follow-ups: role changes re-check pool eligibility ----------
+
+    @Test
+    void employeeInAnOpenPoolCannotBecomeIneligible() throws SQLException {
+        UUID loc = location("MA", true);
+        UUID pool = tipPool(loc);
+        UUID emp = employee(loc);
+        exec(member(pool, emp, false, false, 0, false, false));
+        String where = " where id = '" + emp + "'";
+
+        assertRejected(CHECK_VIOLATION, "update employee set is_manager = true" + where);
+        assertRejected(CHECK_VIOLATION, "update employee set is_supervisor = true" + where);
+        assertRejected(CHECK_VIOLATION, "update employee set owner_equity_bps = 2500, owner_active_mgmt = true" + where);
+        assertRejected(CHECK_VIOLATION, "update employee set boh = true" + where); // tip-credit location
+        assertRejected(CHECK_VIOLATION, "update employee set location_id = '" + location("MA", true) + "'" + where);
+
+        exec("update employee set display_name = 'Pat R.'" + where); // harmless edits still allowed
+        exec("update tip_pool set closed_at = now() where id = '" + pool + "'");
+        exec("update employee set is_manager = true" + where); // promotion after the pool closes is fine
+    }
+
+    // ---------- slice-1 follow-ups: managed Postgres ----------
+
+    @Test
+    void migrationsRunAsANonSuperuserDatabaseOwner() throws SQLException {
+        exec("create role st_app login password 'st_app' nosuperuser nocreatedb nocreaterole");
+        exec("create database st_app_db owner st_app");
+        String url = "jdbc:postgresql://%s:%d/st_app_db".formatted(PG.getHost(), PG.getMappedPort(5432));
+        assertThatCode(() -> Flyway.configure().dataSource(url, "st_app", "st_app")
+                .locations("classpath:db/migration").load().migrate())
+                .doesNotThrowAnyException();
     }
 
     // ---------- idempotency ----------

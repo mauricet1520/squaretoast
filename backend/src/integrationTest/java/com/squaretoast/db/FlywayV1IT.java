@@ -12,6 +12,8 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -338,6 +340,54 @@ class FlywayV1IT {
         exec("update employee set is_manager = true" + where); // promotion after the pool closes is fine
     }
 
+    @Test
+    void tipCreditCannotStartWhileAPastPeriodPoolIsStillOpenWithBohStaff() throws SQLException {
+        UUID loc = location("MA", false);
+        UUID pool = UUID.randomUUID();
+        exec("""
+                insert into tip_pool(id, location_id, period_start, period_end, distribution_basis)
+                values ('%s','%s', now() - interval '8 days', now() - interval '1 day', 'HOURS')""".formatted(pool, loc));
+        exec(member(pool, employee(loc, false, false, 0, false, true), false, false, 0, false, true));
+        String flip = "update location set uses_tip_credit = true where id = '" + loc + "'";
+
+        assertRejected(CHECK_VIOLATION, flip); // period over, but payroll not closed: still open
+        exec("update tip_pool set closed_at = now() where id = '" + pool + "'");
+        exec(flip); // closed pools no longer hold the location back
+    }
+
+    @Test
+    void openPoolWithMembersCannotMoveToAnotherLocation() throws SQLException {
+        UUID loc = location("MA", false);
+        UUID pool = tipPool(loc);
+        exec(member(pool, employee(loc), false, false, 0, false, false));
+        assertRejected(CHECK_VIOLATION,
+                "update tip_pool set location_id = '" + location("MA", false) + "' where id = '" + pool + "'");
+    }
+
+    @Test
+    void concurrentPromotionCannotLeaveAManagerInAnOpenPool() throws Exception {
+        UUID loc = location("MA", false);
+        UUID pool = tipPool(loc);
+        UUID emp = employee(loc);
+        race(member(pool, emp, false, false, 0, false, false),
+                "update employee set is_manager = true where id = '" + emp + "'");
+        assertThat(column("""
+                select m.employee_id from tip_pool_member m join employee e on e.id = m.employee_id
+                where e.id = '%s' and e.is_manager""".formatted(emp))).isEmpty();
+    }
+
+    @Test
+    void concurrentTipCreditSwitchCannotLeaveBohStaffInAnOpenPool() throws Exception {
+        UUID loc = location("MA", false);
+        UUID pool = tipPool(loc);
+        UUID cook = employee(loc, false, false, 0, false, true);
+        race(member(pool, cook, false, false, 0, false, true),
+                "update location set uses_tip_credit = true where id = '" + loc + "'");
+        assertThat(column("""
+                select m.employee_id from tip_pool_member m join location l on l.id = '%s'
+                where m.pool_id = '%s' and l.uses_tip_credit""".formatted(loc, pool))).isEmpty();
+    }
+
     // ---------- slice-1 follow-ups: managed Postgres ----------
 
     @Test
@@ -502,6 +552,33 @@ class FlywayV1IT {
                 c.rollback();
                 throw e;
             }
+        }
+    }
+
+    /**
+     * T1 runs {@code first} and keeps its transaction open while T2 runs {@code second}; then T1 commits.
+     * Either side may be rejected; callers assert the invariant on the final state.
+     */
+    private static void race(String first, String second) throws Exception {
+        try (Connection t1 = connect()) {
+            t1.setAutoCommit(false);
+            try (Statement s = t1.createStatement()) {
+                s.execute(first);
+            }
+            CompletableFuture<Void> t2 = CompletableFuture.runAsync(() -> {
+                try {
+                    tx(second);
+                } catch (SQLException rejected) {
+                    // a rejection is an acceptable outcome; the final state is what is asserted
+                }
+            });
+            Thread.sleep(500);
+            try {
+                t1.commit();
+            } catch (SQLException rejected) {
+                t1.rollback();
+            }
+            t2.get(15, TimeUnit.SECONDS);
         }
     }
 

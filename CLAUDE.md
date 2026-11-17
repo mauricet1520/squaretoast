@@ -38,7 +38,7 @@ SquareToast is a **$0/month, hardware-agnostic, processor-portable restaurant PO
 - Run `/security-review` on every payment, webhook, or authentication change.
 
 ## Token & Cost Discipline (Mandatory)
-1. **Delegate verbose work to subagents:** `haiku` for exploration and Gradle runs (return only pass/fail + exact failure lines); one `sonnet` subagent per finished slice audits against this file and returns only violations or "PASS".
+1. **Run builds directly, delegate only verbose work:** run Gradle in the main session, always filtered to pass/fail + exact failure lines (e.g. `| grep -E "error:|warning:|FAILED|BUILD" | head -n 30`). Use a `haiku` subagent only for broad exploration or when a run's output would still be long after filtering (e.g. many failing Testcontainers tests). One `sonnet` subagent per finished slice audits against this file and returns only violations or "PASS".
 2. **Surgical reads:** read target line ranges/classes only.
 3. **Zero fluff:** no restated prompts or unchanged code; output diffs/new files only. Pipe builds: `./gradlew ... --console=plain -q | tail -n 30`.
 4. **Slice hygiene:** stop after each slice and remind the user to `/compact` (or `/clear` when switching modules).

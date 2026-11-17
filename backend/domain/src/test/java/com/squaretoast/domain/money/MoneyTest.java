@@ -57,4 +57,17 @@ class MoneyTest {
         assertThatThrownBy(() -> CurrencyCode.of("US")).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> CurrencyCode.of("XYZ")).isInstanceOf(IllegalArgumentException.class); // not ISO-4217
     }
+
+    @Test
+    void onlyCurrenciesWithTwoMinorDigitsFitTheCentsModel() {
+        assertThatThrownBy(() -> CurrencyCode.of("JPY")).isInstanceOf(IllegalArgumentException.class); // 0 digits
+        assertThatThrownBy(() -> CurrencyCode.of("BHD")).isInstanceOf(IllegalArgumentException.class); // 3 digits
+        assertThatThrownBy(() -> CurrencyCode.of("XAU")).isInstanceOf(IllegalArgumentException.class); // no minor unit
+    }
+
+    @Test
+    @SuppressWarnings("NullAway")
+    void moneyRequiresACurrency() {
+        assertThatThrownBy(() -> Money.ofCents(1, null)).isInstanceOf(NullPointerException.class);
+    }
 }

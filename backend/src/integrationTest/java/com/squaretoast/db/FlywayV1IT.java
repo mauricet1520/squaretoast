@@ -186,6 +186,29 @@ class FlywayV1IT {
         assertRejected(CHECK_VIOLATION, alloc(a, line2, 3, 2));
     }
 
+    @Test
+    void movingAnAllocationCannotLeaveTheSourceLineUnderAllocated() throws SQLException {
+        UUID loc = location("MA", false);
+        UUID order = order(loc);
+        UUID line1 = orderLine(order, course(order), menuItem(loc));
+        UUID line2 = orderLine(order, course(order, 2), menuItem(loc));
+        UUID a = guestCheck(order), b = guestCheck(order);
+        tx(alloc(a, line1, 1, 2), alloc(b, line1, 1, 2));
+        // line2 ends at exactly 1/2 + 1/2 = 1, so only the source line (left at 1/2) can trip the check.
+        assertRejected(CHECK_VIOLATION, alloc(a, line2, 1, 2),
+                "update check_allocation set order_line_id = '%s' where check_id = '%s' and order_line_id = '%s'"
+                        .formatted(line2, b, line1));
+    }
+
+    @Test
+    void allocationCheckAndLineMustBelongToTheSameOrder() {
+        UUID loc = location("MA", false);
+        UUID orderA = order(loc);
+        UUID orderB = order(loc);
+        UUID lineOfB = orderLine(orderB, course(orderB), menuItem(loc));
+        assertRejected(CHECK_VIOLATION, alloc(guestCheck(orderA), lineOfB, 1, 1));
+    }
+
     // ---------- FLSA tip pools ----------
 
     @Test
@@ -207,6 +230,43 @@ class FlywayV1IT {
         UUID noCreditPool = tipPool(noCreditLoc);
         assertRejected(CHECK_VIOLATION, member(tipCreditPool, employee(noCreditLoc), false, false, 0, false, true));
         exec(member(noCreditPool, employee(noCreditLoc), false, false, 0, false, true));
+    }
+
+    @Test
+    void poolEligibilityIsJudgedOnTheEmployeeRecordNotCallerSuppliedSnapshots() {
+        UUID loc = location("MA", true);
+        UUID pool = tipPool(loc);
+        assertRejected(CHECK_VIOLATION, member(pool, employee(loc, true, false, 0, false, false), false, false, 0, false, false));
+        assertRejected(CHECK_VIOLATION, member(pool, employee(loc, false, true, 0, false, false), false, false, 0, false, false));
+        assertRejected(CHECK_VIOLATION, member(pool, employee(loc, false, false, 2500, true, false), false, false, 0, false, false));
+        assertRejected(CHECK_VIOLATION, member(pool, employee(loc, false, false, 0, false, true), false, false, 0, false, false));
+    }
+
+    @Test
+    void cannotStartTakingTipCreditWhileBohStaffAreInAPool() throws SQLException {
+        UUID loc = location("MA", false);
+        exec(member(tipPool(loc), employee(loc, false, false, 0, false, true), false, false, 0, false, true));
+        assertRejected(CHECK_VIOLATION, "update location set uses_tip_credit = true where id = '" + loc + "'");
+    }
+
+    @Test
+    void stateCannotRevokeTipCreditWhileALocationUsesIt() {
+        location("ME", true);
+        assertRejected(CHECK_VIOLATION, """
+                update state_compliance_profile set tip_credit_allowed = false, min_cash_wage_cents = min_wage_cents
+                where state_code = 'ME'""");
+    }
+
+    @Test
+    void journalTxnWithoutLinesIsRejectedAtCommit() {
+        UUID txn = UUID.randomUUID();
+        assertRejected(CHECK_VIOLATION, journalTxnSql(txn, location("MA", false)));
+    }
+
+    @Test
+    void appendOnlyTablesCannotBeTruncated() {
+        assertRejected(CHECK_VIOLATION, "truncate course_transition");
+        assertRejected(CHECK_VIOLATION, "truncate journal_line");
     }
 
     // ---------- idempotency ----------
@@ -303,8 +363,14 @@ class FlywayV1IT {
     }
 
     private static UUID employee(UUID loc) {
+        return employee(loc, false, false, 0, false, false);
+    }
+
+    private static UUID employee(UUID loc, boolean manager, boolean supervisor, int ownerBps, boolean ownerActive, boolean boh) {
         UUID id = UUID.randomUUID();
-        execUnchecked("insert into employee(id, location_id, display_name, role) values ('%s','%s','Pat','SERVER')".formatted(id, loc));
+        execUnchecked("""
+                insert into employee(id, location_id, display_name, role, is_manager, is_supervisor, owner_equity_bps, owner_active_mgmt, boh)
+                values ('%s','%s','Pat','SERVER',%s,%s,%d,%s,%s)""".formatted(id, loc, manager, supervisor, ownerBps, ownerActive, boh));
         return id;
     }
 

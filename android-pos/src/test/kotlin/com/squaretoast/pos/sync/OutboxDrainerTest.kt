@@ -141,6 +141,29 @@ class OutboxDrainerTest {
     }
 
     @Test
+    fun aBatchTheServerRejectsAsInvalidBecomesConflictsInsteadOfBlockingTheQueue() = runBlocking {
+        val ids = placeOrders(2)
+        val rejecting = SyncApi { throw RejectedBatchException(400) }
+
+        val outcome = OutboxDrainer(db, rejecting).drain()
+
+        assertEquals(DrainOutcome.Drained(sent = 2, conflicts = 2), outcome)
+        val conflicts = db.outboxDao().conflicts().first()
+        assertEquals(ids, conflicts.map { it.mutationId })
+        assertTrue(conflicts.all { it.lastError == "HTTP 400" })
+    }
+
+    @Test
+    fun authAndThrottlingRejectionsAreRetriedNotConflicted() = runBlocking {
+        placeOrders(1)
+        for (status in listOf(401, 403, 408, 429)) {
+            val outcome = OutboxDrainer(db, SyncApi { throw RejectedBatchException(status) }).drain()
+            assertTrue("$status", outcome is DrainOutcome.RetryLater)
+        }
+        assertTrue(db.outboxDao().all().all { it.state == OutboxState.PENDING && it.attempts == 4 })
+    }
+
+    @Test
     fun nothingPendingSendsNothing() = runBlocking {
         assertEquals(DrainOutcome.Drained(sent = 0, conflicts = 0), OutboxDrainer(db, server).drain())
         assertTrue(server.batches.isEmpty())

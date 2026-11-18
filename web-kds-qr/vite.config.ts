@@ -1,8 +1,9 @@
 import { defineConfig } from 'vitest/config';
 
-// One bundle serves /kds, /t/{qrToken} and /c. Relative asset paths let the LAN hub serve it under /kds/.
+// One bundle serves /kds, /t/{qrToken} and /c. Assets use absolute /assets/ paths so deep links load them;
+// the LAN hub serves /assets/* from the same files.
 export default defineConfig({
-  base: './',
+  base: '/',
   esbuild: { jsx: 'automatic', jsxImportSource: 'preact' },
   build: { outDir: 'dist', assetsDir: 'assets', sourcemap: false },
   server: { proxy: { '/api': 'http://localhost:8080' } },

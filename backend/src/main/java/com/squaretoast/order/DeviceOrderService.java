@@ -4,6 +4,8 @@ import com.squaretoast.domain.order.CourseAction;
 import com.squaretoast.domain.order.CourseState;
 import com.squaretoast.domain.order.CourseStateMachine;
 import com.squaretoast.domain.order.IllegalCourseTransitionException;
+import com.squaretoast.realtime.RealtimePublisher;
+import com.squaretoast.realtime.Topics;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -30,10 +32,14 @@ public class DeviceOrderService {
 
     private final JdbcClient db;
     private final OrderCommitService commits;
+    private final RealtimePublisher realtime;
+    private final KdsTickets tickets;
 
-    DeviceOrderService(JdbcClient db, OrderCommitService commits) {
+    DeviceOrderService(JdbcClient db, OrderCommitService commits, RealtimePublisher realtime, KdsTickets tickets) {
         this.db = db;
         this.commits = commits;
+        this.realtime = realtime;
+        this.tickets = tickets;
     }
 
     @Transactional(propagation = Propagation.MANDATORY)
@@ -133,6 +139,8 @@ public class DeviceOrderService {
         db.sql("update course set state = ?, version = version + 1 where id = ?").params(toDb(next), courseId).update();
         db.sql("insert into course_transition(course_id, from_state, to_state, actor_id) values (?, ?, ?, ?)")
                 .params(courseId, row.state(), toDb(next), device).update();
+        // Every transition, from the KDS or a POS sync, reaches kitchen screens with the whole ticket.
+        realtime.publish(location, Topics.COURSE, () -> tickets.ticket(courseId).orElseThrow());
     }
 
     /** The database keeps the KDS-only PREPPING state; to the POS it is still fired. */

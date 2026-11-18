@@ -28,7 +28,10 @@ import org.springframework.stereotype.Component;
 @Component
 class CheckBalance {
 
-    record Owed(Money subtotal, Money serviceCharges, Money tax, Money alreadyPaid, Money due) {}
+    record Owed(Money subtotal, Money serviceCharges, Money tax, Money alreadyPaid, Money due, List<LineShare> lines) {}
+
+    /** This check's exact cents of one order line. */
+    record LineShare(UUID lineId, long cents) {}
 
     private record Header(UUID order, UUID location, String channel, String state, String currency, String timezone,
                           boolean ca8080, boolean caSeparate, boolean mandatoryTaxable) {}
@@ -76,11 +79,13 @@ class CheckBalance {
         long orderSubtotal = 0;
         long checkSubtotal = 0;
         List<TaxableLine> taxable = new ArrayList<>();
+        List<LineShare> shares = new ArrayList<>();
         for (LineRow line : lines) {
             orderSubtotal += line.amount();
             long share = shareOf(checkId, line);
             if (share > 0) {
                 checkSubtotal += share;
+                shares.add(new LineShare(line.id(), share));
                 taxable.add(new TaxableLine(line.taxCategory(), FoodTemp.valueOf(line.temp()), Money.ofCents(share, currency)));
             }
         }
@@ -116,7 +121,7 @@ class CheckBalance {
         Money chargeMoney = Money.ofCents(chargeTotal, currency);
         Money alreadyPaid = Money.ofCents(paid, currency);
         Money due = subtotal.plus(chargeMoney).plus(tax).minus(alreadyPaid);
-        return new Owed(subtotal, chargeMoney, tax, alreadyPaid, due);
+        return new Owed(subtotal, chargeMoney, tax, alreadyPaid, due, List.copyOf(shares));
     }
 
     /** This check's exact cents of a line, splitting the line across every check (and any unallocated part). */

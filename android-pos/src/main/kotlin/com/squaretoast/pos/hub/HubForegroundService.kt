@@ -61,7 +61,14 @@ class HubForegroundService : Service() {
             if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0)
         locks.acquire()
         if (server == null) {
-            server = embeddedServer(CIO, port = PORT, host = "0.0.0.0") { hubModule(runtime.board, runtime.tokens) }
+            val bundle = KdsAssets { path ->
+                try {
+                    assets.open("kds/$path").use { it.readBytes() }
+                } catch (_: java.io.IOException) {
+                    null
+                }
+            }
+            server = embeddedServer(CIO, port = PORT, host = "0.0.0.0") { hubModule(runtime.board, runtime.tokens, bundle) }
                 .also { it.start(wait = false) }
             advertise()
         }

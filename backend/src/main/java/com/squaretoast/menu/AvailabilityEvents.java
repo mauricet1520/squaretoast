@@ -1,6 +1,7 @@
 package com.squaretoast.menu;
 
 import com.squaretoast.domain.menu.Availability;
+import com.squaretoast.realtime.Topics;
 import com.squaretoast.domain.menu.Consumption;
 import com.squaretoast.domain.menu.InventoryLevel;
 import com.squaretoast.domain.menu.MenuItem;
@@ -18,7 +19,7 @@ import org.jspecify.annotations.Nullable;
 /** Builds the "availability" SSE payload: changed inventory plus every item/option whose 86 state depends on it. */
 public final class AvailabilityEvents {
 
-    public static final String TOPIC = "availability";
+    public static final String TOPIC = Topics.AVAILABILITY;
 
     private AvailabilityEvents() {}
 

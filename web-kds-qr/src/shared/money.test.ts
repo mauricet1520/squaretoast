@@ -1,5 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import { formatCents, sumCents } from './money';
+import { formatCents, parseCents, percentOf, sumCents } from './money';
+
+describe('tip entry', () => {
+  it('parses dollars typed by a guest into cents without floating point', () => {
+    expect(parseCents('12')).toBe(1200);
+    expect(parseCents('12.5')).toBe(1250);
+    expect(parseCents(' 0.07 ')).toBe(7);
+    expect(parseCents('1.005')).toBeNull();
+    expect(parseCents('-1')).toBeNull();
+    expect(parseCents('1e3')).toBeNull();
+    expect(parseCents('')).toBeNull();
+  });
+
+  it('computes percentage tips in integers, half up', () => {
+    expect(percentOf(3432, 18)).toBe(618); // 617.76
+    expect(percentOf(1250, 20)).toBe(250);
+    expect(percentOf(5, 10)).toBe(1); // 0.5 rounds up
+    expect(() => percentOf(10.5, 10)).toThrow(TypeError);
+  });
+});
 
 describe('money is integer cents only', () => {
   it('formats cents without floating point', () => {

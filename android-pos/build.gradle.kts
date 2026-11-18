@@ -76,3 +76,33 @@ dependencies {
     testImplementation(libs.ktor.server.test.host)
     testImplementation(libs.ktor.client.mock)
 }
+
+// The KDS web bundle (plan S6-11/S6-12): built by :web-kds-qr and packed into a generated assets folder, so the
+// LAN hub can serve it at /kds. Nothing built is committed under src/.
+abstract class CopyKdsBundle : DefaultTask() {
+    @get:InputDirectory
+    abstract val bundle: DirectoryProperty
+
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
+
+    @get:javax.inject.Inject
+    abstract val fs: FileSystemOperations
+
+    @TaskAction
+    fun copy() {
+        fs.sync {
+            from(bundle)
+            into(outputDir.dir("kds"))
+        }
+    }
+}
+
+val copyKdsBundle = tasks.register<CopyKdsBundle>("copyKdsBundle") {
+    dependsOn(":web-kds-qr:webBuild")
+    bundle.set(rootProject.layout.projectDirectory.dir("web-kds-qr/dist"))
+}
+
+androidComponents {
+    onVariants { variant -> variant.sources.assets?.addGeneratedSourceDirectory(copyKdsBundle, CopyKdsBundle::outputDir) }
+}

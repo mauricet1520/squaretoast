@@ -10,12 +10,14 @@ import com.squaretoast.menu.LocationMenu;
 import com.squaretoast.menu.MenuRepository;
 import com.squaretoast.realtime.RealtimePublisher;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.SortedMap;
 import java.util.UUID;
+import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -39,13 +41,24 @@ public class OrderCommitService {
 
     @Transactional
     public void commit(UUID orderId) {
+        commit(orderId, null);
+    }
+
+    /** Commits only an order of {@code location}; another location's order is reported as not found. */
+    @Transactional
+    public void commitAt(UUID orderId, UUID location) {
+        commit(orderId, location);
+    }
+
+    private void commit(UUID orderId, @Nullable UUID onlyAt) {
         // Row lock on the order first: a second commit of the same order waits here, then finds it not OPEN.
         Optional<UUID> found = jdbc.sql("""
                 update orders set status = 'COMMITTED', committed_at = now(), version = version + 1
-                where id = ? and status = 'OPEN' returning location_id""")
-                .param(orderId).query(UUID.class).optional();
+                where id = ? and status = 'OPEN' and (cast(? as uuid) is null or location_id = ?) returning location_id""")
+                .params(Arrays.asList(orderId, onlyAt, onlyAt)).query(UUID.class).optional();
         if (found.isEmpty()) {
-            boolean exists = jdbc.sql("select count(*) from orders where id = ?").param(orderId).query(Long.class).single() > 0;
+            boolean exists = jdbc.sql("select count(*) from orders where id = ? and (cast(? as uuid) is null or location_id = ?)")
+                    .params(Arrays.asList(orderId, onlyAt, onlyAt)).query(Long.class).single() > 0;
             throw exists ? new CommitException.Conflict("ORDER_NOT_OPEN", null) : new CommitException.NotFound(orderId);
         }
         UUID location = found.get();

@@ -80,10 +80,12 @@ public class StripeWebhookService {
             return;
         }
         Optional<LockedPayment> found = db.sql("""
-                select p.id, p.amount_cents, p.tip_cents, p.application_fee_cents, p.currency, o.location_id
+                select p.id, p.amount_cents, p.tip_cents, p.application_fee_cents, p.currency,
+                       coalesce(o.location_id, cl.location_id) as location_id
                 from payment p
-                join guest_check c on c.id = p.check_id
-                join orders o on o.id = c.order_id
+                left join guest_check c on c.id = p.check_id
+                left join orders o on o.id = c.order_id
+                left join offline_check_claim cl on cl.check_id = p.claim_check_id
                 where p.processor = 'STRIPE' and p.processor_intent_ref = ?
                 for update of p""")
                 .params(intentRef)
@@ -102,6 +104,11 @@ public class StripeWebhookService {
             return;
         }
         db.sql("update payment set status = 'SUCCEEDED' where id = ? and status in ('PENDING', 'REQUIRES_ACTION')")
+                .params(p.id()).update();
+        // An offline claim is paid once its payment succeeds; reconciling it with the synced check comes later.
+        db.sql("""
+                update offline_check_claim set status = 'PAID'
+                where status = 'PENDING' and check_id = (select claim_check_id from payment where id = ?)""")
                 .params(p.id()).update();
 
         String balanceTxn = text(charge.path("balance_transaction"));

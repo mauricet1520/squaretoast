@@ -129,7 +129,10 @@ public final class MenuFixture {
 
     /** Slice 6: these endpoints need a device of the same location, so each location gets one on first use. */
     public HttpResponse<String> commit(UUID order) {
-        UUID location = queryOne("select location_id from orders where id = ?", order, UUID.class);
+        // An unknown order has no location; any real device's token then gets the honest 404.
+        UUID location = exists("select 1 from orders where id = ?", order)
+                ? queryOne("select location_id from orders where id = ?", order, UUID.class)
+                : location();
         return send(HttpRequest.newBuilder(URI.create(baseUrl + "/orders/" + order + "/commit"))
                 .header("Authorization", "Bearer " + tokenFor(location))
                 .POST(HttpRequest.BodyPublishers.noBody()).build());
@@ -205,6 +208,17 @@ public final class MenuFixture {
                 ps.setObject(i + 1, params[i]);
             }
             ps.execute();
+        } catch (SQLException e) {
+            throw new IllegalStateException(sql, e);
+        }
+    }
+
+    private boolean exists(String sql, Object param) {
+        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setObject(1, param);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
         } catch (SQLException e) {
             throw new IllegalStateException(sql, e);
         }

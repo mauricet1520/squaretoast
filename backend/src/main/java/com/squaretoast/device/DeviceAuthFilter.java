@@ -21,17 +21,18 @@ import org.springframework.web.filter.OncePerRequestFilter;
 final class DeviceAuthFilter extends OncePerRequestFilter {
 
     /**
-     * Public today. The Slice 2 menu, 86 and order-commit endpoints are on this list only until the KDS and POS
-     * send tokens (plan §9).
+     * Public endpoints. Each one authorizes on its own terms: the guest QR routes by the table's QR token, the
+     * KDS stream by a one-time ticket, claims by the device signature, webhooks by Stripe's signature. The
+     * public {@code /stream} carries only 86 availability.
      */
     private static final Pattern PUBLIC = Pattern.compile("""
             ^/api/[^/]+/(health\
             |devices/enroll\
             |webhooks/stripe\
             |stream\
-            |locations/[^/]+/menu\
-            |locations/[^/]+/inventory/[^/]+/eighty-six\
-            |orders/[^/]+/commit)$""");
+            |kds/stream\
+            |claims/payments\
+            |t/[^/]+(/orders|/checks(/[^/]+(/payments)?)?)?)$""");
     private static final Pattern TOKEN = Pattern.compile("[A-Za-z0-9_-]{20,128}");
 
     private final JdbcClient db;

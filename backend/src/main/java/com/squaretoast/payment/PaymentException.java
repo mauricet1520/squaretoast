@@ -34,6 +34,15 @@ public abstract sealed class PaymentException extends RuntimeException {
         }
     }
 
+    /** Everything owed is already paid or being paid under another key. */
+    public static final class NothingDue extends PaymentException {
+        private static final long serialVersionUID = 1L;
+
+        NothingDue() {
+            super("nothing due");
+        }
+    }
+
     /** The idempotency key already belongs to a different charge. */
     public static final class IdempotencyConflict extends PaymentException {
         private static final long serialVersionUID = 1L;

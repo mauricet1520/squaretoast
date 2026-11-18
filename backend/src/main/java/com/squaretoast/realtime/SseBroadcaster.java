@@ -9,6 +9,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Predicate;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,8 +38,10 @@ class SseBroadcaster {
         this.store = store;
     }
 
-    SseEmitter subscribe(UUID location, @Nullable Long lastEventId) {
+    /** {@code topics} decides which topics this subscriber may see; replay and live delivery both apply it. */
+    SseEmitter subscribe(UUID location, @Nullable Long lastEventId, Predicate<String> topics) {
         SseEmitter emitter = new SseEmitter(TIMEOUT.toMillis());
+        Subscriber sub = new Subscriber(emitter, topics);
         Channel ch = channels.computeIfAbsent(location, l -> new Channel(store.head(l)));
         ch.lock.lock();
         try {
@@ -53,21 +56,23 @@ class SseBroadcaster {
                     if (e.seq() > ch.cursor) {
                         break;
                     }
-                    send(emitter, e);
+                    if (topics.test(e.topic())) {
+                        send(emitter, e);
+                    }
                     from = e.seq();
                 }
                 if (page.getLast().seq() > ch.cursor) {
                     break;
                 }
             }
-            ch.emitters.add(emitter);
+            ch.subscribers.add(sub);
         } catch (IOException | IllegalStateException e) {
             emitter.completeWithError(e);
             return emitter;
         } finally {
             ch.lock.unlock();
         }
-        Runnable remove = () -> ch.emitters.remove(emitter);
+        Runnable remove = () -> ch.subscribers.remove(sub);
         emitter.onCompletion(remove);
         emitter.onTimeout(remove);
         emitter.onError(t -> remove.run());
@@ -94,18 +99,21 @@ class SseBroadcaster {
             List<StoredEvent> page;
             do {
                 page = store.after(location, ch.cursor);
-                List<SseEmitter> gone = new ArrayList<>();
+                List<Subscriber> gone = new ArrayList<>();
                 for (StoredEvent e : page) {
-                    for (SseEmitter emitter : ch.emitters) {
+                    for (Subscriber s : ch.subscribers) {
+                        if (!s.topics().test(e.topic())) {
+                            continue;
+                        }
                         try {
-                            send(emitter, e);
+                            send(s.emitter(), e);
                         } catch (IOException | IllegalStateException closed) {
-                            gone.add(emitter);
+                            gone.add(s);
                         }
                     }
                     ch.cursor = e.seq();
                 }
-                ch.emitters.removeAll(gone);
+                ch.subscribers.removeAll(gone);
             } while (page.size() == RealtimeEventStore.MAX_REPLAY);
         } finally {
             ch.lock.unlock();
@@ -116,9 +124,11 @@ class SseBroadcaster {
         emitter.send(SseEmitter.event().id(Long.toString(e.seq())).name(e.topic()).data(e.payload(), MediaType.TEXT_PLAIN));
     }
 
+    private record Subscriber(SseEmitter emitter, Predicate<String> topics) {}
+
     private static final class Channel {
         final ReentrantLock lock = new ReentrantLock();
-        final List<SseEmitter> emitters = new CopyOnWriteArrayList<>();
+        final List<Subscriber> subscribers = new CopyOnWriteArrayList<>();
         long cursor;
 
         Channel(long cursor) {

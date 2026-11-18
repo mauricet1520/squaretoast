@@ -9,7 +9,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
-/** SSE stream for POS/QR/KDS clients; EventSource resends Last-Event-ID on reconnect. */
+/**
+ * Public SSE stream of 86 availability for guest menus. Course and order events, which name tables and dishes,
+ * go only to the authenticated KDS stream ({@link RealtimeStreams}).
+ */
 @RestController
 class SseController {
 
@@ -22,6 +25,6 @@ class SseController {
     @GetMapping(path = "/stream", version = "1", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     SseEmitter stream(@RequestParam UUID locationId,
                       @RequestHeader(name = "Last-Event-ID", required = false) @Nullable Long lastEventId) {
-        return broadcaster.subscribe(locationId, lastEventId);
+        return broadcaster.subscribe(locationId, lastEventId, Topics.AVAILABILITY::equals);
     }
 }

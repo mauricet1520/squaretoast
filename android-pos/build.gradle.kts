@@ -16,6 +16,7 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.5.0"
+        buildConfigField("String", "CLOUD_BASE_URL", "\"https://api.squaretoast.app\"")
     }
 
     buildFeatures {

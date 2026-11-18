@@ -153,10 +153,12 @@ class CheckPaymentIT {
         UUID burgerLine = (UUID) d.row("select id from order_line where order_id = ? and menu_item_id = ?", order, burger)
                 .get("id");
         m.exec("insert into guest_check(id, order_id, label) values (?, ?, 'Seat 2')", checkB, order);
-        m.exec("update check_allocation set numerator = 1, denominator = 2 where check_id = ? and order_line_id = ?",
-                checkA, burgerLine);
-        m.exec("insert into check_allocation(check_id, order_line_id, numerator, denominator) values (?, ?, 1, 2)",
-                checkB, burgerLine);
+        // One statement, so the schema's "allocations sum to exactly 1" check sees both halves together.
+        m.exec("""
+                with half as (update check_allocation set numerator = 1, denominator = 2
+                              where check_id = ? and order_line_id = ? returning order_line_id)
+                insert into check_allocation(check_id, order_line_id, numerator, denominator)
+                select ?, order_line_id, 1, 2 from half""", checkA, burgerLine, checkB);
 
         d.pay(pos.token(), checkA, payBody(UUID.randomUUID(), "CARD_PRESENT", 0));
         assertThat(lastIntent().formValue("amount")).isEqualTo("2681"); // half of 2 burgers (1500) + fries 1000 + 181.25 -> 181 tax

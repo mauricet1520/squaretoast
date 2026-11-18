@@ -86,11 +86,14 @@ public final class DeviceFixture {
         db.sql("update location set stripe_terminal_location_id = ? where id = ?").params(ref, location).update();
     }
 
+    /** Idempotent: tests share one database, and two identical rules would be ambiguous to the tax engine. */
     public void taxRule(String state, String category, int ratePpm) {
         db.sql("""
                 insert into tax_rule(id, state_code, jurisdiction_code, tax_category, rate_ppm, effective_from)
-                values (?, ?, ?, ?, ?, date '2020-01-01')""")
-                .params(UUID.randomUUID(), state, state + "-STATE", category, ratePpm).update();
+                select ?, ?, ?, ?, ?, date '2020-01-01'
+                where not exists (select 1 from tax_rule where state_code = ? and jurisdiction_code = ? and tax_category = ?)""")
+                .params(UUID.randomUUID(), state, state + "-STATE", category, ratePpm, state, state + "-STATE", category)
+                .update();
     }
 
     // ------------------------------------------------------------------ queries

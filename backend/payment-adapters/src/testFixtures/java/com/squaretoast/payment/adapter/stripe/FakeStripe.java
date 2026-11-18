@@ -40,7 +40,7 @@ public final class FakeStripe implements AutoCloseable {
             if (body.isEmpty()) {
                 return out;
             }
-            for (String pair : body.split("&")) {
+            for (String pair : body.split("&", -1)) {
                 int eq = pair.indexOf('=');
                 String k = URLDecoder.decode(eq < 0 ? pair : pair.substring(0, eq), StandardCharsets.UTF_8);
                 String v = eq < 0 ? "" : URLDecoder.decode(pair.substring(eq + 1), StandardCharsets.UTF_8);

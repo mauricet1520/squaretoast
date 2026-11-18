@@ -89,9 +89,9 @@ class StripeWebhookVerifierTest {
 
     @Test
     void noConfiguredSecretRejectsEverything() {
-        assertThatThrownBy(() -> verifier().verify(bytes(PAYLOAD), StripeSignatures.header("", NOW, PAYLOAD)))
+        assertThatThrownBy(() -> verifier().verify(bytes(PAYLOAD), StripeSignatures.header("whsec_any", NOW, PAYLOAD)))
                 .isInstanceOf(InvalidWebhookSignatureException.class);
-        assertThatThrownBy(() -> verifier("").verify(bytes(PAYLOAD), StripeSignatures.header("", NOW, PAYLOAD)))
+        assertThatThrownBy(() -> verifier("").verify(bytes(PAYLOAD), StripeSignatures.header("whsec_any", NOW, PAYLOAD)))
                 .isInstanceOf(InvalidWebhookSignatureException.class);
     }
 }

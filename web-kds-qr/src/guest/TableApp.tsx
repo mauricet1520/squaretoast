@@ -2,7 +2,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { call, store } from '../shared/api';
 import { formatCents } from '../shared/money';
 import { addLine, cartSubtotal, emptyCart, lineCents, orderRequest, removeLine, type Cart, type CartError, type MenuItem } from './cart';
-import { CardForm, errorText, TipPicker, type Started } from './Pay';
+import { CardForm, errorText, paymentDone, startPayment, TipPicker, type Started } from './Pay';
 
 type TableView = { table: string; currency: string; menu: { items: MenuItem[] } };
 type CheckSummary = { checkId: string; label: string; dueCents: number; status: string; currency: string };
@@ -197,13 +197,11 @@ function CheckPage({ qr, checkId, onBack }: { qr: string; checkId: string; onBac
   useEffect(() => void reload(), [path]);
 
   async function pay(tipCents: number) {
-    const keyName = `pay.${checkId}`;
-    const key = session.getItem(keyName) ?? crypto.randomUUID();
-    session.setItem(keyName, key);
     setBusy(true);
     setError(null);
     try {
-      setStarted(await call<Started>(`${path}/payments`, { body: { idempotencyKey: key, tipCents } }));
+      setStarted(await startPayment(`check.${checkId}`, tipCents,
+        (key) => call<Started>(`${path}/payments`, { body: { idempotencyKey: key, tipCents } })));
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -236,7 +234,10 @@ function CheckPage({ qr, checkId, onBack }: { qr: string; checkId: string; onBac
       {paid ? (
         <p role="status" class="notice">Thank you! Your payment is processing.</p>
       ) : started ? (
-        <CardForm started={started} onPaid={() => { setPaid(true); session.removeItem(`pay.${checkId}`); void reload(); }} />
+        <>
+          <CardForm started={started} onPaid={() => { setPaid(true); paymentDone(`check.${checkId}`); void reload(); }} />
+          <button class="link" onClick={() => setStarted(null)}>Change tip</button>
+        </>
       ) : bill.dueCents > 0 ? (
         <TipPicker dueCents={bill.dueCents} currency={c} busy={busy} onPay={(t) => void pay(t)} />
       ) : null}

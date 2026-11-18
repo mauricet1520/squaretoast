@@ -113,9 +113,9 @@ class CheckBalance {
 
         long paid = db.sql("""
                 select coalesce(sum(amount_cents - tip_cents), 0) from payment
-                where check_id = ? and (status = 'SUCCEEDED'
+                where (check_id = ? or claim_check_id = ?) and (status = 'SUCCEEDED'
                    or (status in ('PENDING', 'REQUIRES_ACTION') and idempotency_key <> ?))""")
-                .params(checkId, excludingIdempotencyKey).query(Long.class).single();
+                .params(checkId, checkId, excludingIdempotencyKey).query(Long.class).single();
 
         Money subtotal = Money.ofCents(checkSubtotal, currency);
         Money chargeMoney = Money.ofCents(chargeTotal, currency);

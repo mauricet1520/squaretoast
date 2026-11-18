@@ -556,7 +556,62 @@ Goal:
   - `cart`: modifier limits, totals and caps.
   - `pairing`: the token is stripped from the URL.
 
-### 11.3 Not in Slice 6 (follow-ups)
+### 11.3 Slice 6 result (2026-11-18)
+
+**Delivered.** Commits b54e6fe (tests) and cd85c44 (implementation). All test suites pass:
+- `:backend:check`;
+- 136 backend integration tests, 30 of them new in this slice;
+- 71 Android unit tests;
+- Android lint, whose only warnings come from the Stripe SDK's own ProGuard file;
+- 62 Vitest tests;
+- `tsc`.
+
+**Deviations from §11.1:**
+- **Nonces (S6-8).** They live in their own table, `offline_claim_nonce(device_id, nonce)`, not as a column on `offline_check_claim`. A replaced claim's nonce then stays used, so it can't be replayed against another check.
+- **Asset paths (S6-10).** Assets use absolute `/assets/…` paths, because relative paths break on `/t/{qr}` deep links. The hub therefore also serves `/assets/*` from the same bundle.
+- **Test changes.**
+  - `DeviceSyncIT.apiPathsArePrivateUnlessListedAsPublic`: one assertion was changed on purpose, in the tests commit, because S6-9 makes the menu private.
+  - `MenuFixture` setup changes: in the tests commit, it sends a device token; in the implementation commit, it handles committing an unknown order.
+- **Guest checks are time-limited.** A table lists, shows and pays only orders opened in the last 12 hours, so a photo of a table's QR code doesn't reveal later diners' bills.
+
+**Not verified:**
+- No real browser or phone has run the web app.
+- The Stripe Payment Element has not been exercised against Stripe test mode.
+- Hosting the bundle on the cloud origin isn't set up. It needs an SPA fallback for `/t/*`, `/c` and `/kds`, and HTTPS for the service worker.
+
+**Audit (2026-11-18): one High and two Medium findings were fixed test-first.** The failing tests are in b6d7d67; the fixes are in the commit after it.
+
+- **High: abandoned or declined payments held a check's balance forever.**
+  - A payment unfinished after 15 minutes is now canceled at Stripe before a new payment is taken.
+  - If Stripe refuses to cancel it, because it may just have succeeded, it keeps holding the balance. That prevents a double charge.
+  - `payment_intent.payment_failed` and `payment_intent.canceled` release the payment immediately.
+  - A `charge.succeeded` that arrives after a decline is still recorded, because the money was taken.
+- **Medium: changing the tip got the guest stuck on `IDEMPOTENCY_KEY_REUSED`.**
+  - The page now reuses a key only for the same tip.
+  - When the tip changes, the page first withdraws its old unconfirmed payment through `POST /payments/cancel`. The payment's idempotency key is the proof. Only QR payments can be withdrawn, never POS card-present ones.
+- **Medium: a paid offline claim was never linked to the synced check.**
+  - `ORDER_PLACED` may now carry the POS's own `checkId`. The server check then uses that ID, and the claim is marked reconciled.
+  - The check and its claim share one balance: payments under either count against both.
+  - Both payment paths take the same per-check advisory lock, so they can't both see the check as unpaid.
+  - A synced check ID must be new, and must not match another location's claim.
+  - **Not done yet:** the Android POS doesn't send `checkId` until offline claims are wired into its UI.
+
+**Results after the fixes:**
+- `:backend:check` passes.
+- 147 integration tests pass.
+- 71 Android unit tests pass.
+- Android lint passes.
+- 66 Vitest tests and `tsc` pass.
+
+**Low findings still open:**
+- **Tips have no upper bound.** An overflowing tip returns a 500.
+- **A claim is marked PAID after any one successful payment, even a partial one.**
+- **Nothing limits how many open guest orders a table can have.** Each one sends an `order` event to the kitchen screens. The fix is rate limiting at the edge.
+- **A revoked KDS keeps its open stream until the stream times out.**
+- **`frame-ancestors` needs a CSP response header from the cloud host.** A meta tag doesn't enforce it.
+- **The hub's pairing token is sent over LAN HTTP** (D6).
+
+### 11.4 Not in Slice 6 (follow-ups)
 
 - **Reconciling a paid claim with the check once the POS syncs.** The POS has to send its check ID in ORDER_PLACED first.
 - **POS UI for accepting guest orders.** The server publishes the events, but nothing on Android reads them yet.

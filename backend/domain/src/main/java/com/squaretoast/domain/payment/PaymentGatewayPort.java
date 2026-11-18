@@ -14,6 +14,12 @@ public interface PaymentGatewayPort {
     /** The processor's own fee on a settled charge, read from its balance transaction. */
     Money processorFee(String balanceTransactionRef);
 
+    /**
+     * Cancels an unconfirmed intent so it can never be paid. Throws {@link GatewayException} if the processor
+     * refuses (for example because it already succeeded).
+     */
+    void cancelIntent(String intentRef);
+
     /** A short-lived secret the Terminal SDK uses to talk to the processor for one reader location. */
     String createConnectionToken(String terminalLocationRef);
 }

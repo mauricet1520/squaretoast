@@ -43,7 +43,8 @@ public class DeviceOrderService {
     }
 
     @Transactional(propagation = Propagation.MANDATORY)
-    public void placeOrder(UUID device, UUID location, UUID orderId, @Nullable String tableLabel, List<PlacedLine> lines) {
+    public void placeOrder(UUID device, UUID location, UUID orderId, @Nullable String tableLabel, List<PlacedLine> lines,
+                           @Nullable UUID posCheckId) {
         if (lines.isEmpty()) {
             throw new OrderRejected("INVALID_MUTATION");
         }
@@ -76,8 +77,23 @@ public class DeviceOrderService {
         for (Map.Entry<Integer, UUID> c : courses.entrySet()) {
             db.sql("insert into course(id, order_id, course_no) values (?, ?, ?)").params(c.getValue(), orderId, c.getKey()).update();
         }
-        UUID check = UUID.randomUUID();
+        UUID check = posCheckId == null ? UUID.randomUUID() : posCheckId;
+        if (posCheckId != null) {
+            // The POS's own check id, so an offline claim for it and this check share one balance. It must be new,
+            // and an existing claim with this id must belong to this location.
+            boolean taken = db.sql("select count(*) from guest_check where id = ?").params(posCheckId).query(Long.class).single() > 0
+                    || db.sql("select count(*) from offline_check_claim where check_id = ? and location_id <> ?")
+                            .params(posCheckId, location).query(Long.class).single() > 0;
+            if (taken) {
+                throw new OrderRejected("INVALID_MUTATION");
+            }
+        }
         db.sql("insert into guest_check(id, order_id, label) values (?, ?, 'Check 1')").params(check, orderId).update();
+        db.sql("""
+                update offline_check_claim set reconciled_at = now(),
+                       status = case when status = 'PAID' then 'RECONCILED' else status end
+                where check_id = ? and location_id = ?""")
+                .params(check, location).update();
         for (PlacedLine l : lines) {
             MenuLine m = db.sql("select price_cents, tax_category, temp, name from menu_item where id = ? and location_id = ?")
                     .params(l.menuItemId(), location)

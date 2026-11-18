@@ -33,7 +33,9 @@ class MutationApplier {
 
     record Result(String mutationId, Status status, @Nullable String reason) {}
 
-    private record OrderPlaced(String orderId, String locationId, @Nullable String tableLabel, List<Line> lines) {}
+    /** {@code checkId} is the POS's own check id, sent when it may have issued an offline claim for the check. */
+    private record OrderPlaced(String orderId, String locationId, @Nullable String tableLabel, List<Line> lines,
+                               @Nullable String checkId) {}
 
     private record Line(String lineId, String courseId, int course, int seat, String menuItemId, int quantity) {}
 
@@ -108,7 +110,9 @@ class MutationApplier {
                     List<PlacedLine> lines = p.lines().stream().map(l -> new PlacedLine(UUID.fromString(l.lineId()),
                             UUID.fromString(l.courseId()), l.course(), l.seat(), UUID.fromString(l.menuItemId()),
                             l.quantity())).toList();
-                    orders.placeOrder(device.deviceId(), device.locationId(), orderId, p.tableLabel(), lines);
+                    String check = p.checkId();
+                    orders.placeOrder(device.deviceId(), device.locationId(), orderId, p.tableLabel(), lines,
+                            check == null ? null : UUID.fromString(check));
                 }
                 case "COURSE_TRANSITIONED" -> {
                     CourseTransitioned p = JSON.readValue(payload, CourseTransitioned.class);

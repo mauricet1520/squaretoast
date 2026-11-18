@@ -9,6 +9,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -33,6 +34,21 @@ public class StripeWebhookService {
 
     private static final Logger log = LoggerFactory.getLogger(StripeWebhookService.class);
     private static final Set<String> CHARGE_EVENTS = Set.of("charge.succeeded", "charge.updated");
+
+    /** A declined or canceled intent stops holding the check's balance at once. */
+    private static final Map<String, String> INTENT_ENDED =
+            Map.of("payment_intent.payment_failed", "FAILED", "payment_intent.canceled", "CANCELED");
+
+    private void endIntent(JsonNode intent, String status) {
+        String ref = text(intent.path("id"));
+        if (ref == null) {
+            return;
+        }
+        db.sql("""
+                update payment set status = ?
+                where processor = 'STRIPE' and processor_intent_ref = ? and status in ('PENDING', 'REQUIRES_ACTION')""")
+                .params(status, ref).update();
+    }
 
     private final JdbcClient db;
     private final JsonMapper json;
@@ -70,6 +86,8 @@ public class StripeWebhookService {
         }
         if (CHARGE_EVENTS.contains(type)) {
             settleCharge(event.path("data").path("object"));
+        } else if (INTENT_ENDED.containsKey(type)) {
+            endIntent(event.path("data").path("object"), INTENT_ENDED.get(type));
         }
         db.sql("update webhook_event set processed_at = now() where event_id = ?").params(eventId).update();
     }
@@ -103,7 +121,8 @@ public class StripeWebhookService {
             log.warn("Stripe charge for intent {} does not match payment {}; not settled", intentRef, p.id());
             return;
         }
-        db.sql("update payment set status = 'SUCCEEDED' where id = ? and status in ('PENDING', 'REQUIRES_ACTION')")
+        // A succeeded charge is money taken: record it even if the intent was marked failed after an earlier decline.
+        db.sql("update payment set status = 'SUCCEEDED' where id = ? and status in ('PENDING', 'REQUIRES_ACTION', 'FAILED', 'CANCELED')")
                 .params(p.id()).update();
         // An offline claim is paid once its payment succeeds; reconciling it with the synced check comes later.
         db.sql("""

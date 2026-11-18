@@ -48,7 +48,9 @@ class OfflineClaimPayments {
 
     Result pay(String token, UUID key, long tipCents) {
         Claim c = claims.verify(token);
+        payments.releaseStale(c.checkId()); // abandoned payments stop holding the balance (calls Stripe, no tx open)
         long amount = Objects.requireNonNull(tx.execute(s -> {
+            payments.lockTarget(c.checkId()); // shared with the synced server check of the same id
             int freshNonce = db.sql("""
                     insert into offline_claim_nonce(device_id, nonce, check_id) values (?, ?, ?)
                     on conflict (device_id, nonce) do nothing""")
@@ -101,9 +103,9 @@ class OfflineClaimPayments {
             }
             long paid = db.sql("""
                     select coalesce(sum(amount_cents - tip_cents), 0) from payment
-                    where claim_check_id = ? and (status = 'SUCCEEDED'
+                    where (claim_check_id = ? or check_id = ?) and (status = 'SUCCEEDED'
                        or (status in ('PENDING', 'REQUIRES_ACTION') and idempotency_key <> ?))""")
-                    .params(c.checkId(), key).query(Long.class).single();
+                    .params(c.checkId(), c.checkId(), key).query(Long.class).single();
             long due = c.totalCents() - paid;
             if (due <= 0) {
                 throw new PaymentException.NothingDue();

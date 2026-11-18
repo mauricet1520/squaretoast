@@ -4,14 +4,19 @@ import com.squaretoast.domain.money.CurrencyCode;
 import com.squaretoast.domain.money.Money;
 import com.squaretoast.domain.payment.ApplicationFeeCalculator;
 import com.squaretoast.domain.payment.ChargeRequest;
+import com.squaretoast.domain.payment.GatewayException;
 import com.squaretoast.domain.payment.GatewayIntent;
 import com.squaretoast.domain.payment.PaymentGatewayPort;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -33,8 +38,77 @@ public class PaymentService {
         this.gateway = gateway;
     }
 
-    private record Existing(UUID id, UUID checkId, boolean claim, String method, long amountCents, long tipCents,
-                            long feeCents, String currency, @Nullable String intentRef, @Nullable String clientSecret) {}
+    private record Existing(UUID id, UUID checkId, boolean claim, String method, String status, long amountCents,
+                            long tipCents, long feeCents, String currency, @Nullable String intentRef,
+                            @Nullable String clientSecret) {}
+
+    private static final Logger log = LoggerFactory.getLogger(PaymentService.class);
+
+    /** Statuses that still hold part of a balance: the guest or reader may yet complete them. */
+    static final Set<String> IN_FLIGHT = Set.of("PENDING", "REQUIRES_ACTION");
+
+    /** After this long an unfinished payment is treated as abandoned and canceled at the processor. */
+    static final int STALE_AFTER_MINUTES = 15;
+
+    public enum Withdrawal { WITHDRAWN, NOT_FOUND, NOT_CANCELABLE }
+
+    /**
+     * Serialises every payment decision for one check id, whether it arrives as a server check or as the offline
+     * claim that names the same id, so the two paths can never both see a balance as unpaid.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void lockTarget(UUID checkId) {
+        db.sql("select pg_advisory_xact_lock(hashtextextended(cast(? as text), 1))").params("payment:" + checkId)
+                .query((rs, n) -> n).list();
+    }
+
+    /**
+     * Cancels this check's unfinished payments older than {@link #STALE_AFTER_MINUTES} at the processor, so an
+     * abandoned payment stops holding the balance. One the processor will not cancel (it may have just succeeded)
+     * keeps holding it. Calls the processor, so call it outside any transaction.
+     */
+    public void releaseStale(UUID checkId) {
+        record Stale(UUID id, @Nullable String intent) {}
+        List<Stale> stale = db.sql("""
+                select id, processor_intent_ref from payment
+                where (check_id = ? or claim_check_id = ?) and status in ('PENDING', 'REQUIRES_ACTION')
+                  and created_at < now() - make_interval(mins => ?)""")
+                .params(checkId, checkId, STALE_AFTER_MINUTES)
+                .query((rs, n) -> new Stale(rs.getObject("id", UUID.class), rs.getString("processor_intent_ref")))
+                .list();
+        stale.forEach(s -> cancel(s.id(), s.intent()));
+    }
+
+    /**
+     * A guest withdraws their own unconfirmed QR payment, e.g. to change the tip. Knowing the payment's random
+     * idempotency key is the proof; POS card-present payments cannot be withdrawn this way.
+     */
+    public Withdrawal withdraw(UUID idempotencyKey) {
+        Optional<Existing> found = find(idempotencyKey);
+        if (found.isEmpty() || !found.get().method().equals(CardMethod.QR_CNP.name())) {
+            return Withdrawal.NOT_FOUND;
+        }
+        Existing e = found.get();
+        if (!IN_FLIGHT.contains(e.status())) {
+            return Withdrawal.NOT_CANCELABLE;
+        }
+        return cancel(e.id(), e.intentRef()) ? Withdrawal.WITHDRAWN : Withdrawal.NOT_CANCELABLE;
+    }
+
+    /** Cancels at the processor first; the row is marked CANCELED only once the processor agreed. */
+    private boolean cancel(UUID paymentId, @Nullable String intentRef) {
+        if (intentRef != null) {
+            try {
+                gateway.cancelIntent(intentRef);
+            } catch (GatewayException e) {
+                log.info("processor would not cancel intent {} ({})", intentRef, e.code());
+                return false;
+            }
+        }
+        db.sql("update payment set status = 'CANCELED' where id = ? and status in ('PENDING', 'REQUIRES_ACTION')")
+                .params(paymentId).update();
+        return true;
+    }
 
     private record Context(String checkStatus, String currency, @Nullable String connectedAccount, UUID merchantId) {}
 
@@ -50,6 +124,9 @@ public class PaymentService {
             }
             if (e.intentRef() != null) {
                 return new StartedPayment(e.id(), e.intentRef(), e.clientSecret());
+            }
+            if (!IN_FLIGHT.contains(e.status())) {
+                throw new PaymentException.IdempotencyConflict(); // released as stale before Stripe was reached
             }
         }
 
@@ -144,12 +221,12 @@ public class PaymentService {
 
     private Optional<Existing> find(UUID idempotencyKey) {
         return db.sql("""
-                select id, coalesce(check_id, claim_check_id) as target, claim_check_id is not null as claim, method,
+                select id, coalesce(check_id, claim_check_id) as target, claim_check_id is not null as claim, method, status,
                        amount_cents, tip_cents, application_fee_cents, currency, processor_intent_ref, client_secret
                 from payment where idempotency_key = ?""")
                 .params(idempotencyKey)
                 .query((rs, n) -> new Existing(rs.getObject("id", UUID.class), rs.getObject("target", UUID.class),
-                        rs.getBoolean("claim"), rs.getString("method"), rs.getLong("amount_cents"), rs.getLong("tip_cents"),
+                        rs.getBoolean("claim"), rs.getString("method"), rs.getString("status"), rs.getLong("amount_cents"), rs.getLong("tip_cents"),
                         rs.getLong("application_fee_cents"), rs.getString("currency"),
                         rs.getString("processor_intent_ref"), rs.getString("client_secret")))
                 .optional();

@@ -1,7 +1,10 @@
 import { loadStripe, type Stripe, type StripeElements } from '@stripe/stripe-js';
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { ApiError } from '../shared/api';
+import { ApiError, call, store } from '../shared/api';
 import { formatCents, parseCents, percentOf, sumCents } from '../shared/money';
+import { forgetKey, keyFor } from './payKey';
+
+const session = store('session');
 
 export type Started = { paymentId: string; clientSecret: string; publishableKey: string };
 
@@ -90,6 +93,28 @@ export function CardForm({ started, onPaid }: { started: Started; onPaid: () => 
   );
 }
 
+/**
+ * Starts (or retries) a guest payment. If the guest changed the tip, their earlier unconfirmed payment is
+ * withdrawn first; if Stripe can no longer cancel it (it may have just gone through), the new one is not started.
+ */
+export async function startPayment(scope: string, tipCents: number, start: (key: string) => Promise<Started>): Promise<Started> {
+  const { key, withdraw } = keyFor(session, scope, tipCents, () => crypto.randomUUID());
+  if (withdraw !== null) {
+    try {
+      await call('/payments/cancel', { body: { idempotencyKey: withdraw } });
+    } catch (e) {
+      if (!(e instanceof ApiError && e.status === 404)) {
+        throw e; // 404: it was never created, so nothing holds the balance
+      }
+    }
+  }
+  return start(key);
+}
+
+export function paymentDone(scope: string): void {
+  forgetKey(session, scope);
+}
+
 export function errorText(err: unknown): string {
   if (err instanceof ApiError) {
     switch (err.code) {
@@ -98,6 +123,7 @@ export function errorText(err: unknown): string {
       case 'INVALID_CLAIM': return 'This payment code is no longer valid. Please ask your server for a new one.';
       case 'CLAIM_SUPERSEDED': return 'Your server issued a newer payment code. Please scan the latest one.';
       case 'CLAIM_REPLAYED': return 'This payment code was already used.';
+      case 'NOT_CANCELABLE': return 'Your earlier payment may already have gone through. Please check with your server.';
       default: return err.status === 404 ? 'We could not find that.' : 'Something went wrong. Please try again.';
     }
   }

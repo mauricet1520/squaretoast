@@ -1,10 +1,8 @@
 import { useState } from 'preact/hooks';
-import { call, store } from '../shared/api';
+import { call } from '../shared/api';
 import { formatCents } from '../shared/money';
 import { readClaim } from './claim';
-import { CardForm, errorText, TipPicker, type Started } from './Pay';
-
-const session = store('session');
+import { CardForm, errorText, paymentDone, startPayment, TipPicker, type Started } from './Pay';
 
 /** Pay-at-table from an offline POS's QR code. The amount shown is the signed total; the server checks it. */
 export function ClaimApp({ fragment }: { fragment: string }) {
@@ -21,14 +19,12 @@ export function ClaimApp({ fragment }: { fragment: string }) {
   const expired = claim.expiresAtEpochSecond * 1000 <= Date.now();
 
   async function pay(tipCents: number) {
-    const keyName = `claim.${claim.checkId}`;
-    const key = session.getItem(keyName) ?? crypto.randomUUID();
-    session.setItem(keyName, key);
     setBusy(true);
     setError(null);
     try {
       // The token goes in the request body, never in a URL.
-      setStarted(await call<Started>('/claims/payments', { body: { claim: token, idempotencyKey: key, tipCents } }));
+      setStarted(await startPayment(`claim.${claim.checkId}`, tipCents,
+        (key) => call<Started>('/claims/payments', { body: { claim: token, idempotencyKey: key, tipCents } })));
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -51,7 +47,10 @@ export function ClaimApp({ fragment }: { fragment: string }) {
       ) : paid ? (
         <p role="status" class="notice">Thank you! Your payment is processing.</p>
       ) : started ? (
-        <CardForm started={started} onPaid={() => { setPaid(true); session.removeItem(`claim.${claim.checkId}`); }} />
+        <>
+          <CardForm started={started} onPaid={() => { setPaid(true); paymentDone(`claim.${claim.checkId}`); }} />
+          <button class="link" onClick={() => setStarted(null)}>Change tip</button>
+        </>
       ) : (
         <TipPicker dueCents={claim.totalCents} currency={claim.currency} busy={busy} onPay={(t) => void pay(t)} />
       )}

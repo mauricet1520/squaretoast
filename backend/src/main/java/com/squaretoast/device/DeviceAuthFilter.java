@@ -32,6 +32,7 @@ final class DeviceAuthFilter extends OncePerRequestFilter {
             |stream\
             |kds/stream\
             |claims/payments\
+            |payments/cancel\
             |t/[^/]+(/orders|/checks(/[^/]+(/payments)?)?)?)$""");
     private static final Pattern TOKEN = Pattern.compile("[A-Za-z0-9_-]{20,128}");
 

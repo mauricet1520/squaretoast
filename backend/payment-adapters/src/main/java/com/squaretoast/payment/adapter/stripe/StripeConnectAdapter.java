@@ -37,6 +37,7 @@ public final class StripeConnectAdapter implements PaymentGatewayPort {
     public static final String API_VERSION = "2025-09-30.clover";
 
     private static final Pattern BALANCE_TXN = Pattern.compile("txn_[A-Za-z0-9]+");
+    private static final Pattern PAYMENT_INTENT = Pattern.compile("pi_[A-Za-z0-9]+");
     private static final Pattern TERMINAL_LOCATION = Pattern.compile("tml_[A-Za-z0-9]+");
     private static final Duration TIMEOUT = Duration.ofSeconds(20);
     private static final JsonMapper JSON = JsonMapper.builder().build();
@@ -83,6 +84,15 @@ public final class StripeConnectAdapter implements PaymentGatewayPort {
         }
         StripeApi.BalanceTransaction txn = call(() -> api.balanceTransaction(balanceTransactionRef));
         return Money.ofCents(txn.fee(), CurrencyCode.of(txn.currency().toUpperCase(Locale.ROOT)));
+    }
+
+    /** Destination charges live on the platform account, so no Stripe-Account header here either. */
+    @Override
+    public void cancelIntent(String intentRef) {
+        if (!PAYMENT_INTENT.matcher(intentRef).matches()) {
+            throw new IllegalArgumentException("not a PaymentIntent id");
+        }
+        call(() -> api.cancelPaymentIntent(intentRef));
     }
 
     /** Platform-account token (no Stripe-Account header), scoped to the location's Terminal Location. */

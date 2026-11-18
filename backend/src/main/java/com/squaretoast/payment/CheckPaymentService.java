@@ -31,7 +31,12 @@ public class CheckPaymentService {
 
     /** Throws {@link PaymentException.NotFound} unless the check is at {@code location}. */
     public StartedPayment start(UUID checkId, UUID location, UUID key, CardMethod method, long tipCents) {
+        if (!atLocation(checkId, location)) {
+            throw new PaymentException.NotFound();
+        }
+        payments.releaseStale(checkId); // abandoned payments stop holding the balance (calls Stripe, no tx open)
         long amount = Objects.requireNonNull(tx.execute(s -> {
+            payments.lockTarget(checkId); // shared with an offline claim naming the same check id
             boolean locked = db.sql("""
                     select g.id from guest_check g join orders o on o.id = g.order_id
                     where g.id = ? and o.location_id = ? for update of g""")
@@ -53,5 +58,10 @@ public class CheckPaymentService {
             return total;
         }));
         return payments.start(new CardPaymentCommand(key, checkId, method, amount, tipCents));
+    }
+
+    private boolean atLocation(UUID checkId, UUID location) {
+        return db.sql("select count(*) from guest_check g join orders o on o.id = g.order_id where g.id = ? and o.location_id = ?")
+                .params(checkId, location).query(Long.class).single() > 0;
     }
 }

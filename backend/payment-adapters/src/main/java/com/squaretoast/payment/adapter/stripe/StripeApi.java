@@ -20,6 +20,9 @@ interface StripeApi {
     PaymentIntent createPaymentIntent(@RequestHeader("Idempotency-Key") String idempotencyKey,
                                       @RequestBody MultiValueMap<String, String> form);
 
+    @PostExchange("/payment_intents/{id}/cancel")
+    PaymentIntent cancelPaymentIntent(@PathVariable String id);
+
     @PostExchange(url = "/terminal/connection_tokens", contentType = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
     ConnectionToken createConnectionToken(@RequestBody MultiValueMap<String, String> form);
 

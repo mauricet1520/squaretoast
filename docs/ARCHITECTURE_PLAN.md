@@ -361,7 +361,7 @@ SDK details:
 
 ## 9. Risks and open questions
 
-1. **Stripe Terminal 6.0.0 API surface.** I'll verify the class names and the `onBehalfOf` connection param at the start of Slice 5, before writing tests.
+1. **Stripe Terminal 6.0.0 API surface (resolved in Slice 5).** Checked against the 6.0.0 AARs. Discovery is `TapToPayDiscoveryConfiguration(isSimulated)`. Connection is `TapToPayConnectionConfiguration(useCase = TapUseCase.Pay(locationId), autoReconnectOnUnexpectedDisconnect, tapToPayReaderListener)`; there is **no `onBehalfOf`** parameter. The connected account is routed by the server-side PaymentIntent (Slice 4), and the Terminal Location must belong to that account. `Terminal.init` now requires a `LocaleConfig`, and `compileSdk` must be ≥ 35.
 2. **Tap to Pay with developer options.** Stripe blocks production Tap to Pay when debugging is enabled. QA on real devices needs release-signed builds.
 3. **Tip-pool and tax legal data.** Seed profiles cover CA, ME, MA, DE and a default. Real rate tables need a provider (out of scope for v1) and counsel review.
 4. **`btree_gist` on managed Postgres (resolved).** It has been a *trusted* extension since PG 13, so a non-superuser database owner can create it. `FlywayV1IT.migrationsRunAsANonSuperuserDatabaseOwner` proves the full migration set runs that way on an empty database. Reference tables (`currency`, `state_compliance_profile`) should be writable only by the migration role, not the app role. The deploy role needs `CREATE` on the database; no superuser is required. Minimum supported server: PostgreSQL 13.
@@ -375,4 +375,21 @@ SDK details:
    - **Stripe call inside a transaction.** The fee lookup holds a pooled connection and the payment row lock for up to 20 s. Move it ahead of the transaction, or onto an outbox, before high volume.
    - **Body size.** The webhook body is read into memory with no cap. Add a request-size limit at the edge.
    - **Webhook URL.** Stripe must be configured to call `/api/v1/webhooks/stripe`.
-9. **Question:** should guest QR ordering in v1 also work offline via the LAN hub (guest phone on restaurant Wi-Fi)? The plan assumes **cloud-only** QR ordering, while QR *pay* is offline-capable via signed claims.
+9. **Slice 5 deviations and follow-ups (Slice 5b = backend + wiring).**
+   - **Claim key is ECDSA P-256, not Ed25519 (amends D8).** Android Keystore supports P-256 on every API level from 23, but Ed25519 only on some API 33+ devices. The backend verifies `SHA256withECDSA`.
+   - **No backend endpoints yet.** The POS calls `POST /api/v1/sync/mutations`, `POST /api/v1/terminal/connection_token` and `POST /api/v1/checks/{id}/payments`. The payment call sends **only the tip**; the server computes the amount from the check, which closes the "amount from the caller" risk in 8. `CloudApi` fails closed without a device credential, so until device registration and auth exist the outbox waits and Tap to Pay stays gated off.
+   - **Not yet wired in the UI:**
+     - the Terminal Location ID, so Tap to Pay can never pass the gate;
+     - paired BT reader discovery, so the selector always sees no reader;
+     - offline QR claim display, which needs an on-device tax port or a cached server total;
+     - order entry from a menu snapshot (menu sync).
+   - **Device key registration and attestation.** Register the Keystore public key with a key-attestation challenge when online. The backend must accept claims only from registered keys and reject a reused nonce.
+   - **Hub gaps:**
+     - The hub's `CourseBoard` is not yet joined to Room. Hub transitions don't write to the outbox, and POS transitions don't reach the board.
+     - `/kds/*` assets arrive in Slice 6.
+     - The POS↔POS `WS /api/v1/peer` with a pinned TLS cert is not built.
+     - The pairing token crosses the LAN in plain HTTP (D6). It rotates when the hub stops. Nothing logs request URLs.
+   - **Small items:**
+     - `transitionCourse` is not idempotent when retried with the same mutationId; the retry fails rather than double-applying.
+     - Missing Room entities: seats, guest checks and allocations, inventory snapshots, offline claims, hub peers.
+10. **Question:** should guest QR ordering in v1 also work offline via the LAN hub (guest phone on restaurant Wi-Fi)? The plan assumes **cloud-only** QR ordering, while QR *pay* is offline-capable via signed claims.

@@ -63,8 +63,8 @@ class CourseBoard {
     @Synchronized
     fun state(courseId: String): CourseState? = states[courseId]
 
-    @Synchronized
-    fun snapshot(): List<CourseEvent> = states.map { (id, s) -> CourseEvent(seq, id, s) }
+    /** Taken under the transition mutex, so a new subscriber never sees a hubSeq older than an emitted event. */
+    suspend fun snapshot(): List<CourseEvent> = mutex.withLock { synchronized(this) { states.map { (id, s) -> CourseEvent(seq, id, s) } } }
 
     /** Throws NoSuchElementException for an unknown course, IllegalCourseTransitionException for a bad action. */
     suspend fun transition(courseId: String, action: CourseAction): CourseEvent = mutex.withLock {

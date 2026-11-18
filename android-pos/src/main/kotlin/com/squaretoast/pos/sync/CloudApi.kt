@@ -11,7 +11,6 @@ import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.Serializable
-import java.io.IOException
 import java.util.UUID
 
 @Serializable
@@ -54,8 +53,9 @@ class CloudApi(
     }
 
     private suspend inline fun <reified T> post(path: String, body: T) = http.post(baseUrl + path) {
-        deviceCredential()?.let { bearerAuth(it) }
+        // Fail closed: never call the cloud unauthenticated. 401 is retryable, so the outbox waits for a credential.
+        bearerAuth(deviceCredential() ?: throw RejectedBatchException(401))
         contentType(ContentType.Application.Json)
         setBody(body)
-    }.also { if (!it.status.isSuccess()) throw IOException("cloud returned ${it.status.value}") }
+    }.also { if (!it.status.isSuccess()) throw RejectedBatchException(it.status.value) }
 }

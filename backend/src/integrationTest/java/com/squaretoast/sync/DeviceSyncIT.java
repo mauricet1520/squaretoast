@@ -121,6 +121,22 @@ class DeviceSyncIT {
     }
 
     @Test
+    void encodedOrDecoratedPathsAreStillGuarded() {
+        for (String path : List.of("/api/v1/%73ync/mutations", "/api/v1/sync;x=1/mutations", "/api/v1//sync/mutations",
+                "/api/v1/devices/%6De")) {
+            assertThat(d.raw(path.endsWith("me") ? "GET" : "POST", path, path.endsWith("me") ? null : "{\"mutations\":[]}", null)
+                    .statusCode()).as(path).isEqualTo(401);
+        }
+    }
+
+    @Test
+    void apiPathsArePrivateUnlessListedAsPublic() {
+        assertThat(d.raw("GET", "/api/v1/devices/anything-new", null, null).statusCode()).isEqualTo(401);
+        assertThat(d.raw("GET", "/api/v1/health", null, null).statusCode()).isEqualTo(200);
+        assertThat(d.raw("GET", "/api/v1/locations/" + loc + "/menu", null, null).statusCode()).isEqualTo(200);
+    }
+
+    @Test
     void meDescribesTheDeviceAndItsTerminalLocation() {
         HttpResponse<String> r = d.me(pos.token());
         assertThat(r.statusCode()).isEqualTo(200);

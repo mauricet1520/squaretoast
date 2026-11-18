@@ -146,6 +146,44 @@ class CheckPaymentIT {
     }
 
     @Test
+    void concurrentPaymentsWithDifferentKeysChargeTheCheckOnce() throws Exception {
+        UUID check = placeOrder(UUID.randomUUID());
+        java.util.concurrent.CyclicBarrier start = new java.util.concurrent.CyclicBarrier(4);
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+        try {
+            List<java.util.concurrent.Future<Integer>> calls = new java.util.ArrayList<>();
+            for (int i = 0; i < 4; i++) {
+                calls.add(pool.submit(() -> {
+                    start.await();
+                    return d.pay(pos.token(), check, payBody(UUID.randomUUID(), "CARD_PRESENT", 0)).statusCode();
+                }));
+            }
+            List<Integer> statuses = new java.util.ArrayList<>();
+            for (java.util.concurrent.Future<Integer> c : calls) {
+                statuses.add(c.get());
+            }
+            assertThat(statuses).containsExactlyInAnyOrder(200, 409, 409, 409);
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(p.paymentCount(check)).isEqualTo(1);
+    }
+
+    @Test
+    void aRetryAfterThePaymentSettledReturnsThatPayment() {
+        UUID check = placeOrder(UUID.randomUUID());
+        UUID key = UUID.randomUUID();
+        String first = body(d.pay(pos.token(), check, payBody(key, "CARD_PRESENT", 300))).get("paymentId").asString();
+        m.exec("update payment set status = 'SUCCEEDED' where idempotency_key = ?", key);
+
+        HttpResponse<String> retry = d.pay(pos.token(), check, payBody(key, "CARD_PRESENT", 300));
+
+        assertThat(retry.statusCode()).isEqualTo(200);
+        assertThat(body(retry).get("paymentId").asString()).isEqualTo(first);
+        assertThat(p.paymentCount(check)).isEqualTo(1);
+    }
+
+    @Test
     void aSplitCheckOwesOnlyItsShare() {
         UUID order = UUID.randomUUID();
         UUID checkA = placeOrder(order);

@@ -135,6 +135,11 @@ public final class DeviceFixture {
         return send("POST", "/checks/" + check + "/payments", body, token);
     }
 
+    /** A request to an arbitrary path under the server root, e.g. one with encoded or decorated segments. */
+    public HttpResponse<String> raw(String method, String path, @Nullable String body, @Nullable String token) {
+        return send(method, path.substring("/api/v1".length()), body, token);
+    }
+
     public static String payBody(UUID idempotencyKey, String method, long tipCents) {
         return JSON.createObjectNode().put("idempotencyKey", idempotencyKey.toString()).put("method", method)
                 .put("tipCents", tipCents).toString();

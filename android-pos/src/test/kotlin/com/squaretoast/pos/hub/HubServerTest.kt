@@ -14,6 +14,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
@@ -48,6 +49,7 @@ class HubServerTest {
     fun streamSendsASnapshotThenEveryCourseTransition() = hub {
         val sse = createClient { install(SSE) }
         val connected = CompletableDeferred<Unit>()
+        coroutineScope {
         launch {
             connected.await()
             val r = client.post("/api/v1/course/course-1/transition") {
@@ -72,6 +74,7 @@ class HubServerTest {
                 assertEquals("FIRED", fired["state"]!!.jsonPrimitive.content)
                 assertEquals("1", events[1].id)
             }
+        }
         }
     }
 

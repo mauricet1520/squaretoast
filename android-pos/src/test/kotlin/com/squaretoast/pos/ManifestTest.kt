@@ -1,6 +1,5 @@
 package com.squaretoast.pos
 
-import android.app.Application
 import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
@@ -13,10 +12,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(application = Application::class)
 class ManifestTest {
 
     private val context: Context = ApplicationProvider.getApplicationContext()

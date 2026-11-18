@@ -17,6 +17,9 @@ import com.squaretoast.pos.payment.PaymentChoice
 import com.squaretoast.pos.payment.PaymentMethodSelector
 import com.squaretoast.pos.payment.TapToPayGate
 import com.squaretoast.pos.sync.CloudApi
+import com.squaretoast.pos.sync.DeviceCredentialStore
+import com.squaretoast.pos.payment.KeystoreClaimKey
+import android.os.Build
 import com.squaretoast.pos.sync.OutboxDrainWorker
 import com.squaretoast.pos.terminal.TerminalSession
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -43,6 +46,7 @@ class PosViewModel @Inject constructor(
     private val hub: HubRuntime,
     private val cloud: CloudApi,
     private val terminal: TerminalSession,
+    private val credentials: DeviceCredentialStore,
 ) : AndroidViewModel(app) {
 
     val openOrders: StateFlow<List<OrderEntity>> =
@@ -66,6 +70,23 @@ class PosViewModel @Inject constructor(
     private val _hubUrl = MutableStateFlow<String?>(null)
     val hubUrl: StateFlow<String?> = _hubUrl.asStateFlow()
 
+    private val _enrolled = MutableStateFlow(credentials.token() != null)
+    val enrolled: StateFlow<Boolean> = _enrolled.asStateFlow()
+
+    /** Registers this phone with a one-time code and its Keystore claim key; the token is stored encrypted. */
+    fun enroll(code: String) = viewModelScope.launch {
+        val outcome = runCatching {
+            val key = KeystoreClaimKey.loadOrCreate().publicKey.encoded
+            credentials.save(cloud.enroll(code.trim(), key, Build.MODEL).deviceToken)
+        }
+        if (outcome.isSuccess) {
+            _enrolled.value = true
+            OutboxDrainWorker.enqueue(app)
+        } else {
+            _message.value = "That code didn't work. Ask a manager for a new one."
+        }
+    }
+
     fun select(orderId: String) { selected.value = orderId }
 
     fun transition(course: CourseEntity, action: CourseAction) = viewModelScope.launch {
@@ -82,8 +103,9 @@ class PosViewModel @Inject constructor(
             tokenRoundTrip = { runCatching { cloud.connectionToken() }.isSuccess },
             supported = { runCatching { terminal.ensureInitialized(); terminal.tapToPaySupported() }.getOrDefault(false) },
             attestation = {
-                TERMINAL_LOCATION.isNotEmpty() &&
-                    runCatching { terminal.connectTapToPay(TERMINAL_LOCATION) }.getOrDefault(false)
+                // The platform-account Terminal Location for this restaurant, provisioned server-side.
+                val location = runCatching { cloud.me().terminalLocationId }.getOrNull()
+                location != null && runCatching { terminal.connectTapToPay(location) }.getOrDefault(false)
             },
         )
         _choice.value = PaymentMethodSelector(TapToPayGate(signals)) { null }.select()
@@ -115,9 +137,4 @@ class PosViewModel @Inject constructor(
         .filter { it.isUp && !it.isLoopback }
         .flatMap { it.inetAddresses.toList() }
         .firstOrNull { it is Inet4Address && it.isSiteLocalAddress }?.hostAddress
-
-    private companion object {
-        // Provisioned per location by the backend in Slice 5b.
-        const val TERMINAL_LOCATION = ""
-    }
 }

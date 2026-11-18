@@ -13,4 +13,7 @@ public interface PaymentGatewayPort {
 
     /** The processor's own fee on a settled charge, read from its balance transaction. */
     Money processorFee(String balanceTransactionRef);
+
+    /** A short-lived secret the Terminal SDK uses to talk to the processor for one reader location. */
+    String createConnectionToken(String terminalLocationRef);
 }

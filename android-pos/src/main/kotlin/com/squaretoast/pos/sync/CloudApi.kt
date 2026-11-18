@@ -3,7 +3,9 @@ package com.squaretoast.pos.sync
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.bearerAuth
+import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
@@ -11,6 +13,8 @@ import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import java.util.Base64
 import java.util.UUID
 
 @Serializable
@@ -28,9 +32,22 @@ private data class StartCardPayment(val idempotencyKey: String, val method: Stri
 @Serializable
 data class StartedCardPayment(val paymentId: String, val clientSecret: String)
 
+@Serializable
+private data class EnrollRequest(val code: String, val publicKeySpki: String, val label: String)
+
+/** The device token is shown once; the caller must store it encrypted and never log it. */
+@Serializable
+data class Enrollment(val deviceId: String, val locationId: String, val deviceToken: String) {
+    override fun toString() = "Enrollment(deviceId=$deviceId, locationId=$locationId, deviceToken=***)"
+}
+
+@Serializable
+data class DeviceInfo(val deviceId: String, val locationId: String, val terminalLocationId: String? = null)
+
 /**
  * Client for the cloud API. The POS never sends a charge amount: the server computes the check balance, so a
- * tampered client can only choose the tip. Endpoints and device credentials land with the backend in Slice 5b.
+ * tampered client can only choose the tip. Every call but enrollment carries the device token, and none is
+ * made without one.
  */
 class CloudApi(
     private val baseUrl: String,
@@ -40,7 +57,19 @@ class CloudApi(
 
     init { require(baseUrl.startsWith("https://")) { "the cloud API is https only" } }
 
-    private val http = engine.config { install(ContentNegotiation) { json() } }
+    private val http = engine.config {
+        install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+    }
+
+    /** Public endpoint: the one-time code is the credential. */
+    suspend fun enroll(code: String, publicKeySpki: ByteArray, label: String): Enrollment =
+        http.post(baseUrl + "/api/v1/devices/enroll") {
+            contentType(ContentType.Application.Json)
+            setBody(EnrollRequest(code, Base64.getEncoder().encodeToString(publicKeySpki), label))
+        }.also { if (!it.status.isSuccess()) throw RejectedBatchException(it.status.value) }.body()
+
+    suspend fun me(): DeviceInfo =
+        http.get(baseUrl + "/api/v1/devices/me") { authenticate() }.checked().body()
 
     override suspend fun push(batch: List<Mutation>): List<MutationResult> =
         post("/api/v1/sync/mutations", MutationBatch(batch)).body<MutationResults>().results
@@ -52,10 +81,15 @@ class CloudApi(
         return post("/api/v1/checks/$checkId/payments", StartCardPayment(idempotencyKey.toString(), method, tipCents)).body()
     }
 
+    /** Fail closed: never call the cloud unauthenticated. 401 is retryable, so the outbox waits for a credential. */
+    private fun HttpRequestBuilder.authenticate() = bearerAuth(deviceCredential() ?: throw RejectedBatchException(401))
+
+    private fun io.ktor.client.statement.HttpResponse.checked() =
+        also { if (!status.isSuccess()) throw RejectedBatchException(status.value) }
+
     private suspend inline fun <reified T> post(path: String, body: T) = http.post(baseUrl + path) {
-        // Fail closed: never call the cloud unauthenticated. 401 is retryable, so the outbox waits for a credential.
-        bearerAuth(deviceCredential() ?: throw RejectedBatchException(401))
+        authenticate()
         contentType(ContentType.Application.Json)
         setBody(body)
-    }.also { if (!it.status.isSuccess()) throw RejectedBatchException(it.status.value) }
+    }.checked()
 }

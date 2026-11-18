@@ -20,6 +20,9 @@ interface StripeApi {
     PaymentIntent createPaymentIntent(@RequestHeader("Idempotency-Key") String idempotencyKey,
                                       @RequestBody MultiValueMap<String, String> form);
 
+    @PostExchange(url = "/terminal/connection_tokens", contentType = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    ConnectionToken createConnectionToken(@RequestBody MultiValueMap<String, String> form);
+
     @GetExchange("/balance_transactions/{id}")
     BalanceTransaction balanceTransaction(@PathVariable String id);
 
@@ -28,4 +31,7 @@ interface StripeApi {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     record BalanceTransaction(String id, long fee, String currency) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record ConnectionToken(String secret) {}
 }

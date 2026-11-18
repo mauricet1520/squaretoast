@@ -37,6 +37,7 @@ public final class StripeConnectAdapter implements PaymentGatewayPort {
     public static final String API_VERSION = "2025-09-30.clover";
 
     private static final Pattern BALANCE_TXN = Pattern.compile("txn_[A-Za-z0-9]+");
+    private static final Pattern TERMINAL_LOCATION = Pattern.compile("tml_[A-Za-z0-9]+");
     private static final Duration TIMEOUT = Duration.ofSeconds(20);
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
@@ -82,6 +83,17 @@ public final class StripeConnectAdapter implements PaymentGatewayPort {
         }
         StripeApi.BalanceTransaction txn = call(() -> api.balanceTransaction(balanceTransactionRef));
         return Money.ofCents(txn.fee(), CurrencyCode.of(txn.currency().toUpperCase(Locale.ROOT)));
+    }
+
+    /** Platform-account token (no Stripe-Account header), scoped to the location's Terminal Location. */
+    @Override
+    public String createConnectionToken(String terminalLocationRef) {
+        if (!TERMINAL_LOCATION.matcher(terminalLocationRef).matches()) {
+            throw new IllegalArgumentException("not a Terminal Location id");
+        }
+        MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+        form.add("location", terminalLocationRef);
+        return call(() -> api.createConnectionToken(form)).secret();
     }
 
     private GatewayIntent create(ChargeRequest request, MultiValueMap<String, String> form) {

@@ -7,6 +7,7 @@ import com.squaretoast.pos.data.AppDatabase
 import com.squaretoast.pos.data.OrderRepository
 import com.squaretoast.pos.log.ScrubbingTree
 import com.squaretoast.pos.sync.CloudApi
+import com.squaretoast.pos.sync.DeviceCredentialStore
 import com.squaretoast.pos.sync.OutboxDrainer
 import com.squaretoast.pos.terminal.TerminalSession
 import com.squaretoast.pos.terminal.TerminalTokenProvider
@@ -46,7 +47,11 @@ object AppModule {
     fun orders(db: AppDatabase): OrderRepository = OrderRepository(db, Clock.systemUTC())
 
     @Provides @Singleton
-    fun cloud(): CloudApi = CloudApi(BuildConfig.CLOUD_BASE_URL, HttpClient(OkHttp)) { null } // device credential: Slice 5b
+    fun credentials(@ApplicationContext context: Context): DeviceCredentialStore = DeviceCredentialStore(context)
+
+    @Provides @Singleton
+    fun cloud(credentials: DeviceCredentialStore): CloudApi =
+        CloudApi(BuildConfig.CLOUD_BASE_URL, HttpClient(OkHttp), credentials::token)
 
     @Provides
     fun drainer(db: AppDatabase, cloud: CloudApi): OutboxDrainer = OutboxDrainer(db, cloud)

@@ -23,6 +23,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -55,7 +57,7 @@ class MainActivity : ComponentActivity() {
             if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
         }
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {}.launch(permissions.toTypedArray())
-        setContent { MaterialTheme { Surface(Modifier.fillMaxSize()) { PosScreen(vm) } } }
+        setContent { MaterialTheme { Surface(Modifier.fillMaxSize()) { Root(vm) } } }
     }
 }
 
@@ -154,4 +156,24 @@ private fun qrBitmap(text: String, size: Int = 512): Bitmap {
     val m = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, size, size)
     val pixels = IntArray(size * size) { i -> if (m[i % size, i / size]) Color.BLACK else Color.WHITE }
     return Bitmap.createBitmap(pixels, size, size, Bitmap.Config.ARGB_8888)
+}
+
+@Composable
+private fun Root(vm: PosViewModel) {
+    val enrolled by vm.enrolled.collectAsState()
+    if (enrolled) PosScreen(vm) else EnrollScreen(vm)
+}
+
+/** Shown until this phone is enrolled. The code comes from a manager and works once, for 15 minutes. */
+@Composable
+private fun EnrollScreen(vm: PosViewModel) {
+    var code by remember { mutableStateOf("") }
+    val message by vm.message.collectAsState()
+    message?.let { AlertDialog(onDismissRequest = vm::dismissMessage,
+        confirmButton = { TextButton(onClick = vm::dismissMessage) { Text("OK") } }, text = { Text(it) }) }
+    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("Set up this device", style = MaterialTheme.typography.titleLarge)
+        OutlinedTextField(value = code, onValueChange = { code = it }, label = { Text("Enrollment code") }, singleLine = true)
+        Button(onClick = { vm.enroll(code) }, enabled = code.isNotBlank()) { Text("Enroll") }
+    }
 }

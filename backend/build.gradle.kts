@@ -26,6 +26,8 @@ testing {
             useJUnitJupiter()
             dependencies {
                 implementation(project())
+                implementation(testFixtures(project(":backend:payment-adapters")))
+                implementation(project(":backend:domain"))
                 implementation(platform(libs.spring.boot.bom))
                 implementation("org.springframework.boot:spring-boot-starter-test")
                 implementation("org.springframework.boot:spring-boot-testcontainers")

@@ -133,7 +133,9 @@ class DeviceSyncIT {
     void apiPathsArePrivateUnlessListedAsPublic() {
         assertThat(d.raw("GET", "/api/v1/devices/anything-new", null, null).statusCode()).isEqualTo(401);
         assertThat(d.raw("GET", "/api/v1/health", null, null).statusCode()).isEqualTo(200);
-        assertThat(d.raw("GET", "/api/v1/locations/" + loc + "/menu", null, null).statusCode()).isEqualTo(200);
+        // Slice 6: the menu is private now; guests reach it through their table's QR route instead.
+        assertThat(d.raw("GET", "/api/v1/locations/" + loc + "/menu", null, null).statusCode()).isEqualTo(401);
+        assertThat(d.raw("GET", "/api/v1/t/" + d.table(loc, "T9"), null, null).statusCode()).isEqualTo(200);
     }
 
     @Test

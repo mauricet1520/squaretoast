@@ -486,3 +486,79 @@ Still open:
 - **Revoked devices (Low).** A 401 from `/devices/me` should clear the stored token and show enrollment again. Re-enrolling does not revoke the previous token.
 - **Order caps (Low).** No cap yet on quantity or lines per order; add one at about 999. A negative modifier total that makes a line negative gives a 500 in `CheckBalance`; reject it at commit.
 - **Error-code leaks (Low).** `ORDER_EXISTS` and `MUTATION_ID_TAKEN` reveal that an ID exists elsewhere. IDs are random UUIDs, but these could fold into `INVALID_MUTATION`.
+
+---
+
+## 11. Slice 6 — browser KDS, guest QR ordering and pay, offline claim redemption
+
+Approval: on 2026-11-18 the user asked for all remaining slices to be built without stopping for review. This section is the written plan, treated as approved by that instruction. Slice 6 is the last slice in this plan.
+
+Goal:
+- The kitchen and the guest each get a zero-install browser app.
+- A guest can pay a check from their own phone, online or with a claim signed by an offline POS.
+- The Slice 2 endpoints stop being public.
+
+### 11.1 Decisions
+
+| # | Decision | Why |
+|---|---|---|
+| S6-1 | A browser KDS **enrolls as a device**, as a POS does: an enrollment code plus a WebCrypto P-256 public key. It sends its device token as a Bearer header. | One auth model; no new kind of secret. |
+| S6-2 | KDS live stream: `GET /api/v1/kds/stream?ticket=…&lastEventId=…`.<br>The ticket comes from `POST /api/v1/kds/stream-tickets` (device auth). It is 32 random bytes, stored as SHA-256, **single use**, and expires in 60 s.<br>The client reconnects itself, with a fresh ticket and the last seq it saw. | `EventSource` can't send headers, and the long-lived token must never go in a URL, because URLs get logged. Native auto-reconnect would reuse a spent ticket. |
+| S6-3 | Public `/api/v1/stream` now sends **only the `availability` topic** (86 state). Course and order events go only to the authenticated KDS stream. | Keeps ticket contents (items, tables) off a public stream that covers a whole location. |
+| S6-4 | KDS API (device auth, only for the device's own location):<br>• `GET /api/v1/kds/board` returns fired and ready courses with table, course number, lines, modifiers and station.<br>• `POST /api/v1/courses/{id}/transitions` takes `{action, expectedFrom}` and reuses `DeviceOrderService.transitionCourse`.<br>Every transition, from REST or sync, publishes a `course` event that carries the full ticket. | Reuses the shared state machine and its stale-state check. The board never has to re-fetch. |
+| S6-5 | **Guest QR ordering is cloud-only** (this answers §9 Q10).<br>• `GET /api/v1/t/{qrToken}` returns the table and its QR-visible menu.<br>• `POST /api/v1/t/{qrToken}/orders` places an order priced by the server. The order **stays OPEN with its courses on HOLD, and takes no inventory**, until staff accept it through the existing `POST /orders/{id}/commit` (now device-only).<br>• Caps: qty 1–20 per line and at most 30 lines. Modifier choices must belong to the item's groups and respect min/max. An 86'd item is refused immediately. | A public endpoint must not be able to 86 the kitchen's stock or send prank tickets to the kitchen. Inventory is still taken at commit. |
+| S6-6 | Guest bill and payment:<br>• `GET /api/v1/t/{qrToken}/checks` lists the table's checks with what each owes.<br>• `GET …/checks/{checkId}` is the bill, and the receipt once it is paid.<br>• `POST …/checks/{checkId}/payments` takes `{idempotencyKey, tipCents}` (method QR_CNP). It works only for committed orders and uses **the same locked balance flow as the POS**, extracted into `CheckPaymentService`. The response includes Stripe's **publishable** key. | The server computes every amount. Guests type card details only into Stripe's Payment Element, an iframe from js.stripe.com. |
+| S6-7 | **Offline claim redemption:** `POST /api/v1/claims/payments` takes `{claim, idempotencyKey, tipCents}` and is public. The server checks all of:<br>• the token's shape;<br>• the device exists, is not revoked, and is at the claim's location;<br>• the `SHA256withECDSA` signature over the exact payload bytes, using the key from enrollment;<br>• amounts are consistent;<br>• the currency is the location's;<br>• the claim has not expired, and expires within 2 h 5 min of now.<br>Storage and replay:<br>• One claim is kept per POS check ID. A newer claim for the same check replaces the old one only if nothing on the old one is paid or in flight, and it expires later.<br>• A nonce can be used only once per device.<br>Amount: the claim total, minus what is paid or in flight under other keys, plus the tip, computed under the claim's row lock. | This amends D8: no provisional `guest_check` is created. The POS's check ID never matches the ID the server assigns at sync. |
+| S6-8 | V6 migration:<br>• `payment.check_id` becomes nullable; `payment.claim_check_id` is added; exactly one of the two must be set.<br>• `offline_check_claim` gains `location_id`, `nonce`, `expires_at` and `payload`.<br>• New table `kds_stream_ticket`.<br>Webhook settlement finds the location through either path and marks the claim PAID. | Settlement and the ledger work for both payment kinds. |
+| S6-9 | Lock down Slice 2. Menu GET, 86 PUT and order commit need a device token **for the same location**; another location's device gets 404. Existing tests change only their setup (adding a token), never their assertions. | Closes the Slice 5b Medium finding. |
+| S6-10 | Web app: Vite 6, Preact, TypeScript, tested with Vitest and jsdom. One bundle serves `/kds`, `/t/{qrToken}` and `/c#{claim}`.<br>KDS modes:<br>• **Cloud:** device token plus stream tickets.<br>• **Hub:** opened from `http://<lan-ip>:8787/kds?pair=…`. The pairing token moves to `sessionStorage` and is stripped from the URL.<br>Also:<br>• The bell uses Web Audio and plays only after a "Start shift" tap.<br>• Strict CSP: no inline scripts and no `innerHTML`.<br>• The service worker runs only on the HTTPS cloud origin. | Decisions D6 and D9. |
+| S6-11 | `:web-kds-qr` Gradle project: Exec tasks for `npm ci`, `npm test` and `npm run build`. Its `check` runs the tests and `tsc`.<br>`:android-pos` copies `dist` into a **generated** assets directory through `androidComponents`. | §1. The Android build now needs Node. |
+| S6-12 | The hub serves `/kds` and `/kds/*` from APK assets:<br>• safe paths only (no `..`);<br>• the content type set from the file extension;<br>• `no-store` and the CSP headers;<br>• `index.html` as the fallback. | D6. |
+
+### 11.2 RED tests first
+
+- **`KdsIT`:**
+  - The board shows fired courses with their lines, modifiers, station and table; held courses are hidden.
+  - A REST transition writes a transition row and sends a `course` event to the KDS stream.
+  - A stale `expectedFrom` gets 409; another location's course gets 404.
+  - A ticket works once; reused or expired tickets get 401.
+  - The public stream carries no `course` event.
+  - A request with no token gets 401.
+- **`GuestQrIT`:**
+  - The table menu contains only QR-visible items; an unknown token gets 404.
+  - The server sets the price and ignores any price the client sends.
+  - qty 21, 31 lines, an invalid modifier choice, or an 86'd item each get 422.
+  - Resending the same orderId returns the same order.
+  - The order stays OPEN with inventory unchanged until a device commits it.
+  - The bill shows subtotal, tax and due.
+  - Paying an uncommitted order gets 409.
+  - A QR payment charges due + tip as QR_CNP and returns the publishable key.
+  - Another table's check gets 404.
+- **`OfflineClaimIT`:**
+  - A valid claim charges total + tip.
+  - Each of these gets 400 `INVALID_CLAIM` with no payment row: tampered payload, wrong key, revoked device, wrong location, expired, TTL too long, wrong currency, inconsistent amounts.
+  - Retrying with the same key returns the same payment; a second key gets 409 `NOTHING_DUE`.
+  - A nonce reused on another check gets 409.
+  - A newer claim replaces an unpaid claim but not a paid one.
+  - The webhook settles the payment at the claim's location and marks the claim PAID.
+- **`EndpointLockdownIT`:** 401 with no token; 404 for a device from another location.
+- **Android `HubKdsAssetsTest`:**
+  - Serves index.html, with the right content types.
+  - Traversal attempts are refused.
+  - CSP and no-store headers are set.
+- **Web (Vitest):**
+  - `money`: integers only.
+  - `course`: the shared transition vectors.
+  - `board`: events applied in seq order and reversible.
+  - `kdsStream`: reconnects with a new ticket and `lastEventId`.
+  - `bell`: silent until unlocked.
+  - `claim`: decodes the fragment.
+  - `cart`: modifier limits, totals and caps.
+  - `pairing`: the token is stripped from the URL.
+
+### 11.3 Not in Slice 6 (follow-ups)
+
+- **Reconciling a paid claim with the check once the POS syncs.** The POS has to send its check ID in ORDER_PLACED first.
+- **POS UI for accepting guest orders.** The server publishes the events, but nothing on Android reads them yet.
+- **Ticket contents on the hub's course board.** The board has to be joined to Room first.
+- **Rate limits on public endpoints.** These belong at the edge.

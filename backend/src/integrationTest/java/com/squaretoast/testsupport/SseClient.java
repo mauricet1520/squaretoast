@@ -30,7 +30,12 @@ public final class SseClient implements AutoCloseable {
 
     /** Returns once response headers arrive, i.e. after the server registered the subscription. */
     public static SseClient connect(String baseUrl, java.util.UUID location, Long lastEventId) throws Exception {
-        HttpRequest.Builder req = HttpRequest.newBuilder(URI.create(baseUrl + "/stream?locationId=" + location))
+        return open(baseUrl + "/stream?locationId=" + location, lastEventId);
+    }
+
+    /** Any SSE URL, e.g. the KDS stream with its one-time ticket. */
+    public static SseClient open(String url, Long lastEventId) throws Exception {
+        HttpRequest.Builder req = HttpRequest.newBuilder(URI.create(url))
                 .header("Accept", "text/event-stream").GET();
         if (lastEventId != null) {
             req.header("Last-Event-ID", Long.toString(lastEventId));

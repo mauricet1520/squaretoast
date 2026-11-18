@@ -5,7 +5,9 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.Signature;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.spec.ECGenParameterSpec;
@@ -195,6 +197,152 @@ public final class DeviceFixture {
 
     public static JsonNode body(HttpResponse<String> r) {
         return JSON.readTree(r.body());
+    }
+
+    // ------------------------------------------------------------------ Slice 6: signing devices, KDS, guest QR, claims
+
+    /** An enrolled device that also holds the private half of its claim key, as Android Keystore would. */
+    public record Signer(Device device, KeyPair keys) {}
+
+    public Signer enrolledSigner(UUID location) {
+        KeyPair keys = p256KeyPair();
+        HttpResponse<String> r = enroll(enrollmentCode(location, 15), Base64.getEncoder().encodeToString(keys.getPublic().getEncoded()));
+        if (r.statusCode() != 200) {
+            throw new IllegalStateException("enroll failed: " + r.statusCode() + " " + r.body());
+        }
+        JsonNode b = body(r);
+        return new Signer(new Device(UUID.fromString(b.get("deviceId").asString()),
+                UUID.fromString(b.get("locationId").asString()), b.get("deviceToken").asString()), keys);
+    }
+
+    public static KeyPair p256KeyPair() {
+        try {
+            KeyPairGenerator g = KeyPairGenerator.getInstance("EC");
+            g.initialize(new ECGenParameterSpec("secp256r1"));
+            return g.generateKeyPair();
+        } catch (java.security.GeneralSecurityException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** A dining table with a QR token; returns the token. */
+    public String table(UUID location, String label) {
+        String qr = "qr" + UUID.randomUUID().toString().replace("-", "");
+        db.sql("insert into dining_table(id, location_id, label, qr_token) values (?, ?, ?, ?)")
+                .params(UUID.randomUUID(), location, label, qr).update();
+        return qr;
+    }
+
+    public UUID station(UUID location, String name) {
+        UUID id = UUID.randomUUID();
+        db.sql("insert into kds_station(id, location_id, name) values (?, ?, ?)").params(id, location, name).update();
+        return id;
+    }
+
+    public void assignStation(UUID menuItem, UUID station) {
+        db.sql("update menu_item set kds_station_id = ? where id = ?").params(station, menuItem).update();
+    }
+
+    public UUID courseOf(UUID order, int courseNo) {
+        return db.sql("select id from course where order_id = ? and course_no = ?").params(order, courseNo)
+                .query(UUID.class).single();
+    }
+
+    public HttpResponse<String> board(@Nullable String token) {
+        return send("GET", "/kds/board", null, token);
+    }
+
+    public HttpResponse<String> transition(@Nullable String token, UUID course, String action, String expectedFrom) {
+        String b = JSON.createObjectNode().put("action", action).put("expectedFrom", expectedFrom).toString();
+        return send("POST", "/courses/" + course + "/transitions", b, token);
+    }
+
+    public HttpResponse<String> streamTicketResponse(@Nullable String token) {
+        return send("POST", "/kds/stream-tickets", "{}", token);
+    }
+
+    public String streamTicket(String token) {
+        HttpResponse<String> r = streamTicketResponse(token);
+        if (r.statusCode() != 200) {
+            throw new IllegalStateException("stream ticket failed: " + r.statusCode());
+        }
+        return body(r).get("ticket").asString();
+    }
+
+    public String kdsStreamUrl(String ticket, @Nullable Long lastEventId) {
+        return baseUrl + "/kds/stream?ticket=" + ticket + (lastEventId == null ? "" : "&lastEventId=" + lastEventId);
+    }
+
+    public HttpResponse<String> commit(@Nullable String token, UUID order) {
+        return send("POST", "/orders/" + order + "/commit", null, token);
+    }
+
+    public HttpResponse<String> guestTable(String qr) {
+        return send("GET", "/t/" + qr, null, null);
+    }
+
+    public HttpResponse<String> guestOrder(String qr, String body) {
+        return send("POST", "/t/" + qr + "/orders", body, null);
+    }
+
+    public HttpResponse<String> guestChecks(String qr) {
+        return send("GET", "/t/" + qr + "/checks", null, null);
+    }
+
+    public HttpResponse<String> guestCheck(String qr, UUID check) {
+        return send("GET", "/t/" + qr + "/checks/" + check, null, null);
+    }
+
+    public HttpResponse<String> guestPay(String qr, UUID check, UUID idempotencyKey, long tipCents) {
+        String b = JSON.createObjectNode().put("idempotencyKey", idempotencyKey.toString()).put("tipCents", tipCents).toString();
+        return send("POST", "/t/" + qr + "/checks/" + check + "/payments", b, null);
+    }
+
+    /** A guest order line: item, quantity, modifier options, and a price the server must ignore. */
+    public record GuestLine(UUID menuItem, int qty, List<UUID> options) {}
+
+    public static String guestOrderBody(UUID orderId, List<GuestLine> lines) {
+        ArrayNode ls = JSON.createArrayNode();
+        for (GuestLine l : lines) {
+            ArrayNode opts = JSON.createArrayNode();
+            l.options().forEach(o -> opts.add(o.toString()));
+            ObjectNode n = JSON.createObjectNode().put("menuItemId", l.menuItem().toString()).put("qty", l.qty())
+                    .put("unitPriceCents", 1);
+            n.set("optionIds", opts);
+            ls.add(n);
+        }
+        ObjectNode b = JSON.createObjectNode().put("orderId", orderId.toString());
+        b.set("lines", ls);
+        return b.toString();
+    }
+
+    public HttpResponse<String> claimPay(String claim, UUID idempotencyKey, long tipCents) {
+        String b = JSON.createObjectNode().put("claim", claim).put("idempotencyKey", idempotencyKey.toString())
+                .put("tipCents", tipCents).toString();
+        return send("POST", "/claims/payments", b, null);
+    }
+
+    /** The claim fields Android's OfflineClaimSigner signs, in its field order. */
+    public static ObjectNode claimPayload(UUID check, UUID location, UUID device, long subtotal, long tax, long service,
+                                          long total, String currency, long expiresAtEpochSecond, String nonce) {
+        return JSON.createObjectNode().put("checkId", check.toString()).put("locationId", location.toString())
+                .put("deviceId", device.toString()).put("linesDigest", "sha256-test").put("subtotalCents", subtotal)
+                .put("taxCents", tax).put("serviceChargeCents", service).put("totalCents", total).put("currency", currency)
+                .put("expiresAtEpochSecond", expiresAtEpochSecond).put("nonce", nonce);
+    }
+
+    /** base64url(payload).base64url(SHA256withECDSA signature), exactly as the POS puts it in the QR fragment. */
+    public static String signClaim(KeyPair keys, String payloadJson) {
+        try {
+            byte[] payload = payloadJson.getBytes(StandardCharsets.UTF_8);
+            Signature s = Signature.getInstance("SHA256withECDSA");
+            s.initSign(keys.getPrivate());
+            s.update(payload);
+            Base64.Encoder b64 = Base64.getUrlEncoder().withoutPadding();
+            return b64.encodeToString(payload) + "." + b64.encodeToString(s.sign());
+        } catch (java.security.GeneralSecurityException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     // ------------------------------------------------------------------ plumbing

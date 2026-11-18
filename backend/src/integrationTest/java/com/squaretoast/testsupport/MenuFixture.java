@@ -127,19 +127,36 @@ public final class MenuFixture {
 
     // ---------------------------------------------------------------- HTTP
 
+    /** Slice 6: these endpoints need a device of the same location, so each location gets one on first use. */
     public HttpResponse<String> commit(UUID order) {
+        UUID location = queryOne("select location_id from orders where id = ?", order, UUID.class);
         return send(HttpRequest.newBuilder(URI.create(baseUrl + "/orders/" + order + "/commit"))
+                .header("Authorization", "Bearer " + tokenFor(location))
                 .POST(HttpRequest.BodyPublishers.noBody()).build());
     }
 
     public HttpResponse<String> eightySix(UUID location, UUID inventory, boolean eightySixed) {
         return send(HttpRequest.newBuilder(URI.create(baseUrl + "/locations/" + location + "/inventory/" + inventory + "/eighty-six"))
                 .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer " + tokenFor(location))
                 .PUT(HttpRequest.BodyPublishers.ofString("{\"eightySixed\":" + eightySixed + "}")).build());
     }
 
+    private final java.util.Map<UUID, String> tokens = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** A device row for {@code location}, inserted directly with a known token (stored hashed, as enrollment does). */
+    public String tokenFor(UUID location) {
+        return tokens.computeIfAbsent(location, l -> {
+            String token = "tok" + UUID.randomUUID().toString().replace("-", "");
+            exec("insert into device(id, location_id, public_key_spki, token_hash, label) values (?, ?, ?, ?, 'fixture')",
+                    UUID.randomUUID(), l, new byte[] {1}, DeviceFixture.sha256(token));
+            return token;
+        });
+    }
+
     public JsonNode menu(UUID location) {
-        HttpResponse<String> r = send(HttpRequest.newBuilder(URI.create(baseUrl + "/locations/" + location + "/menu")).GET().build());
+        HttpResponse<String> r = send(HttpRequest.newBuilder(URI.create(baseUrl + "/locations/" + location + "/menu"))
+                .header("Authorization", "Bearer " + tokenFor(location)).GET().build());
         if (r.statusCode() != 200) {
             throw new AssertionError("GET menu -> " + r.statusCode() + " " + r.body());
         }

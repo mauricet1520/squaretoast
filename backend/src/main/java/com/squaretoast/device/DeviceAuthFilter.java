@@ -13,12 +13,25 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * Requires a live device bearer token on the POS endpoints. Tokens are looked up by their SHA-256, so a leaked
- * table holds nothing usable and no secret is compared byte by byte.
+ * Every {@code /api/**} path needs a live device bearer token unless it is listed in {@link #PUBLIC}: a new
+ * endpoint is private until someone deliberately makes it public. Paths are matched after the container has
+ * decoded and normalised them (no {@code %xx}, {@code ;params} or {@code //}), the same form the router sees.
+ * Tokens are looked up by their SHA-256, so a leaked table holds nothing usable.
  */
 final class DeviceAuthFilter extends OncePerRequestFilter {
 
-    private static final Pattern GUARDED = Pattern.compile("^/api/[^/]+/(devices/me$|sync/|terminal/|checks/)");
+    /**
+     * Public today. The Slice 2 menu, 86 and order-commit endpoints are on this list only until the KDS and POS
+     * send tokens (plan §9).
+     */
+    private static final Pattern PUBLIC = Pattern.compile("""
+            ^/api/[^/]+/(health\
+            |devices/enroll\
+            |webhooks/stripe\
+            |stream\
+            |locations/[^/]+/menu\
+            |locations/[^/]+/inventory/[^/]+/eighty-six\
+            |orders/[^/]+/commit)$""");
     private static final Pattern TOKEN = Pattern.compile("[A-Za-z0-9_-]{20,128}");
 
     private final JdbcClient db;
@@ -29,7 +42,9 @@ final class DeviceAuthFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        return !GUARDED.matcher(request.getRequestURI().substring(request.getContextPath().length())).find();
+        String pathInfo = request.getPathInfo();
+        String path = request.getServletPath() + (pathInfo == null ? "" : pathInfo);
+        return PUBLIC.matcher(path).matches();
     }
 
     @Override

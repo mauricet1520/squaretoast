@@ -474,3 +474,15 @@ Goal: the backend half of the Android POS, so its outbox drains, Tap to Pay can 
 - showing the offline QR code;
 - Room entities for seats and checks;
 - linking the hub's course board to Room.
+
+**Slice 5b result and follow-ups (audit, 2026-11-18).** Fixed test-first in this slice:
+- Concurrent payments on one check are serialised under the check's row lock.
+- A retry after a payment settled returns that payment.
+- The device filter now denies by default, with an explicit public list, and matches on the container's decoded, normalised path.
+
+Still open:
+- **Enrollment rate limit (Medium).** Add a per-IP and per-location throttle at the edge. The admin tool that issues codes must make them at least 128 bits (codes are stored as unsalted SHA-256).
+- **Public Slice 2 endpoints (Medium).** Menu, 86 and order commit are still on the public list until the KDS and POS send tokens.
+- **Revoked devices (Low).** A 401 from `/devices/me` should clear the stored token and show enrollment again. Re-enrolling does not revoke the previous token.
+- **Order caps (Low).** No cap yet on quantity or lines per order; add one at about 999. A negative modifier total that makes a line negative gives a 500 in `CheckBalance`; reject it at commit.
+- **Error-code leaks (Low).** `ORDER_EXISTS` and `MUTATION_ID_TAKEN` reveal that an ID exists elsewhere. IDs are random UUIDs, but these could fold into `INVALID_MUTATION`.

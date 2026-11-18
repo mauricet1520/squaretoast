@@ -7,11 +7,15 @@ import com.squaretoast.domain.payment.ChargeRequest;
 import com.squaretoast.domain.payment.GatewayIntent;
 import com.squaretoast.domain.payment.PaymentGatewayPort;
 import java.util.Arrays;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Starts a destination charge for a check. The payment row (keyed by the caller's idempotency key) is committed
@@ -49,14 +53,8 @@ public class PaymentService {
             }
         }
 
-        Context ctx = context(cmd.checkId());
-        if (!ctx.checkStatus().equals("OPEN")) {
-            throw new PaymentException.CheckNotOpen();
-        }
-        String account = ctx.connectedAccount();
-        if (account == null) {
-            throw new PaymentException.NotConfigured("no Stripe account");
-        }
+        Context ctx = openContext(cmd.checkId());
+        String account = Objects.requireNonNull(ctx.connectedAccount());
 
         UUID paymentId;
         ChargeRequest request;
@@ -67,24 +65,12 @@ public class PaymentService {
             request = new ChargeRequest(cmd.idempotencyKey(), cmd.checkId(), Money.ofCents(e.amountCents(), currency),
                     Money.ofCents(e.tipCents(), currency), Money.ofCents(e.feeCents(), currency), account);
         } else {
-            CurrencyCode currency = CurrencyCode.of(ctx.currency());
-            Money amount = Money.ofCents(cmd.amountCents(), currency);
-            Spread spread = spread(ctx.merchantId(), cmd.method());
-            Money fee = ApplicationFeeCalculator.fee(amount, spread.bps(), spread.fixedCents());
-            request = new ChargeRequest(cmd.idempotencyKey(), cmd.checkId(), amount, Money.ofCents(cmd.tipCents(), currency),
-                    fee, account);
-            paymentId = UUID.randomUUID();
-            int inserted = db.sql("""
-                    insert into payment(id, check_id, processor, method, amount_cents, tip_cents, application_fee_cents,
-                                        currency, status, idempotency_key)
-                    values (?, ?, 'STRIPE', ?, ?, ?, ?, ?, 'PENDING', ?)
-                    on conflict (idempotency_key) do nothing""")
-                    .params(paymentId, cmd.checkId(), cmd.method().name(), amount.cents(), request.tip().cents(),
-                            fee.cents(), currency.code(), cmd.idempotencyKey())
-                    .update();
-            if (inserted == 0) {
+            Optional<Pending> pending = insertPending(cmd, ctx, account);
+            if (pending.isEmpty()) {
                 return start(cmd); // a concurrent start took the key first; the next pass sees its row
             }
+            paymentId = pending.get().id();
+            request = pending.get().request();
         }
 
         GatewayIntent intent = cmd.method() == CardMethod.CARD_PRESENT
@@ -101,6 +87,58 @@ public class PaymentService {
             }
         }
         return new StartedPayment(paymentId, intent.intentRef(), intent.clientSecret());
+    }
+
+    /**
+     * Records the PENDING payment inside the caller's transaction, without calling the processor. Callers that
+     * compute the amount under a lock (the check balance) reserve first, commit, then call {@link #start}.
+     * Does nothing if this idempotency key already has a payment.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void reserve(CardPaymentCommand cmd) {
+        if (find(cmd.idempotencyKey()).isPresent()) {
+            return;
+        }
+        Context ctx = openContext(cmd.checkId());
+        insertPending(cmd, ctx, Objects.requireNonNull(ctx.connectedAccount()));
+    }
+
+    /** The amount already recorded for this idempotency key, if any. */
+    public OptionalLong reservedAmount(UUID idempotencyKey) {
+        return find(idempotencyKey).map(e -> OptionalLong.of(e.amountCents())).orElse(OptionalLong.empty());
+    }
+
+    private record Pending(UUID id, ChargeRequest request) {}
+
+    private Context openContext(UUID checkId) {
+        Context ctx = context(checkId);
+        if (!ctx.checkStatus().equals("OPEN")) {
+            throw new PaymentException.CheckNotOpen();
+        }
+        if (ctx.connectedAccount() == null) {
+            throw new PaymentException.NotConfigured("no Stripe account");
+        }
+        return ctx;
+    }
+
+    /** Empty when a concurrent request inserted this idempotency key first. */
+    private Optional<Pending> insertPending(CardPaymentCommand cmd, Context ctx, String account) {
+        CurrencyCode currency = CurrencyCode.of(ctx.currency());
+        Money amount = Money.ofCents(cmd.amountCents(), currency);
+        Spread spread = spread(ctx.merchantId(), cmd.method());
+        Money fee = ApplicationFeeCalculator.fee(amount, spread.bps(), spread.fixedCents());
+        ChargeRequest request = new ChargeRequest(cmd.idempotencyKey(), cmd.checkId(), amount,
+                Money.ofCents(cmd.tipCents(), currency), fee, account);
+        UUID paymentId = UUID.randomUUID();
+        int inserted = db.sql("""
+                insert into payment(id, check_id, processor, method, amount_cents, tip_cents, application_fee_cents,
+                                    currency, status, idempotency_key)
+                values (?, ?, 'STRIPE', ?, ?, ?, ?, ?, 'PENDING', ?)
+                on conflict (idempotency_key) do nothing""")
+                .params(paymentId, cmd.checkId(), cmd.method().name(), amount.cents(), request.tip().cents(),
+                        fee.cents(), currency.code(), cmd.idempotencyKey())
+                .update();
+        return inserted == 0 ? Optional.empty() : Optional.of(new Pending(paymentId, request));
     }
 
     private Optional<Existing> find(UUID idempotencyKey) {

@@ -3,8 +3,12 @@ package com.squaretoast.payment;
 import com.squaretoast.device.DevicePrincipal;
 import com.squaretoast.domain.payment.GatewayException;
 import com.squaretoast.domain.payment.PaymentGatewayPort;
+import java.util.Objects;
+import java.util.OptionalLong;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -39,12 +43,15 @@ class DevicePaymentController {
     private final PaymentService payments;
     private final PaymentGatewayPort gateway;
     private final JdbcClient db;
+    private final TransactionTemplate tx;
 
-    DevicePaymentController(CheckBalance balances, PaymentService payments, PaymentGatewayPort gateway, JdbcClient db) {
+    DevicePaymentController(CheckBalance balances, PaymentService payments, PaymentGatewayPort gateway, JdbcClient db,
+                            PlatformTransactionManager txm) {
         this.balances = balances;
         this.payments = payments;
         this.gateway = gateway;
         this.db = db;
+        this.tx = new TransactionTemplate(txm);
     }
 
     @PostMapping(path = "/checks/{checkId}/payments", version = "1")
@@ -56,13 +63,40 @@ class DevicePaymentController {
         if (key == null || tip == null || tip < 0 || method == null) {
             throw new BadRequest();
         }
-        CheckBalance.Owed owed = balances.owed(checkId, device.locationId(), key);
-        if (owed.due().cents() <= 0) {
-            return ResponseEntity.status(HttpStatus.CONFLICT).body(new Problem("NOTHING_DUE"));
-        }
-        StartedPayment p = payments.start(new CardPaymentCommand(key, checkId, method,
-                Math.addExact(owed.due().cents(), tip), tip));
+        // Under the check's row lock: read the balance and record the PENDING payment, then commit. Concurrent
+        // payments on one check serialise here, so the second sees the first as in flight. Stripe is called after.
+        long amount = Objects.requireNonNull(tx.execute(s -> {
+            boolean locked = db.sql("""
+                    select g.id from guest_check g join orders o on o.id = g.order_id
+                    where g.id = ? and o.location_id = ? for update of g""")
+                    .params(checkId, device.locationId()).query(UUID.class).optional()
+                    .isPresent();
+            if (!locked) {
+                throw new PaymentException.NotFound();
+            }
+            OptionalLong reserved = payments.reservedAmount(key);
+            if (reserved.isPresent()) {
+                return reserved.getAsLong(); // a retry: the original amount, even if the check is now settled
+            }
+            CheckBalance.Owed owed = balances.owed(checkId, device.locationId(), key);
+            if (owed.due().cents() <= 0) {
+                throw new NothingDue();
+            }
+            long total = Math.addExact(owed.due().cents(), tip);
+            payments.reserve(new CardPaymentCommand(key, checkId, method, total, tip));
+            return total;
+        }));
+        StartedPayment p = payments.start(new CardPaymentCommand(key, checkId, method, amount, tip));
         return ResponseEntity.ok(new Started(p.paymentId(), p.clientSecret()));
+    }
+
+    private static final class NothingDue extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+    }
+
+    @ExceptionHandler
+    ResponseEntity<Problem> nothingDue(NothingDue e) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new Problem("NOTHING_DUE"));
     }
 
     /** A platform-account token scoped to the location's Terminal Location (destination charges). */

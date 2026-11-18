@@ -7,7 +7,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.squaretoast.payment.adapter.stripe.FakeStripe;
 import com.squaretoast.testsupport.DeviceFixture;
+import com.squaretoast.testsupport.DeviceFixture.Line;
 import com.squaretoast.testsupport.DeviceFixture.Signer;
+import com.squaretoast.testsupport.MenuFixture;
 import com.squaretoast.testsupport.PaymentFixture;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
@@ -15,6 +17,7 @@ import java.security.KeyPair;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -64,6 +67,8 @@ class OfflineClaimIT {
     PaymentFixture p;
     UUID loc;
     Signer pos;
+    UUID burger;
+    UUID fries;
 
     @BeforeEach
     void seed() {
@@ -73,6 +78,9 @@ class OfflineClaimIT {
                 String id = "pi_" + String.valueOf(r.header("Idempotency-Key")).replace("-", "");
                 return new FakeStripe.Response(200,
                         "{\"id\":\"%s\",\"object\":\"payment_intent\",\"client_secret\":\"%s_secret_x\"}".formatted(id, id));
+            }
+            if (r.path().startsWith("/v1/payment_intents/") && r.path().endsWith("/cancel")) {
+                return new FakeStripe.Response(200, "{\"object\":\"payment_intent\",\"status\":\"canceled\"}");
             }
             if (r.path().startsWith("/v1/balance_transactions/")) {
                 return new FakeStripe.Response(200,
@@ -84,6 +92,11 @@ class OfflineClaimIT {
         p = new PaymentFixture(dataSource, port, "whsec_it");
         loc = p.location(15, 5, 290, 30);
         pos = d.enrolledSigner(loc);
+        // 2 burgers + fries = 4000, 7.25% tax = 290: the same 4290 the claims in this class sign.
+        d.taxRule("US", "FOOD", 72_500);
+        MenuFixture m = new MenuFixture(dataSource, port);
+        burger = m.menuItem(loc, "Burger", 1500);
+        fries = m.menuItem(loc, "Fries", 1000);
     }
 
     private static long inOneHour() {
@@ -248,6 +261,83 @@ class OfflineClaimIT {
         assertThat(p.settlementCount(intent)).isEqualTo(1);
         assertThat(p.settlementLocation(intent)).isEqualTo(loc);
         assertThat(d.row("select status from offline_check_claim where check_id = ?", check).get("status")).isEqualTo("PAID");
+    }
+
+    // ---------------------------------------------------------------- audit: abandoned payments, reconciliation
+
+    @Test
+    void anAbandonedClaimPaymentIsCanceledAfterFifteenMinutes() {
+        String token = signed(claim(UUID.randomUUID(), nonce()));
+        UUID abandoned = UUID.randomUUID();
+        d.claimPay(token, abandoned, 0);
+        p.agePayment(abandoned, 16);
+
+        HttpResponse<String> r = d.claimPay(token, UUID.randomUUID(), 0);
+
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        assertThat(p.payment(abandoned).get("status")).isEqualTo("CANCELED");
+    }
+
+    @Test
+    void aGuestCanWithdrawAClaimPaymentToChangeTheTip() {
+        String token = signed(claim(UUID.randomUUID(), nonce()));
+        UUID first = UUID.randomUUID();
+        d.claimPay(token, first, 300);
+
+        assertThat(d.cancelPayment(first).statusCode()).isEqualTo(204);
+        HttpResponse<String> again = d.claimPay(token, UUID.randomUUID(), 500);
+        assertThat(again.statusCode()).isEqualTo(200);
+        assertThat(lastIntent().formValue("amount")).isEqualTo("4790");
+    }
+
+    private HttpResponse<String> syncCheck(UUID checkId) {
+        return d.sync(pos.device().token(), List.of(d.orderPlaced(UUID.randomUUID(), UUID.randomUUID(), loc,
+                Map.of(1, UUID.randomUUID()), List.of(new Line(burger, 1, 1, 2, 1500), new Line(fries, 2, 1, 1, 1000)), checkId)));
+    }
+
+    @Test
+    void aSyncedCheckCountsWhatWasPaidThroughItsClaim() {
+        UUID check = UUID.randomUUID();
+        assertThat(d.claimPay(signed(claim(check, nonce())), UUID.randomUUID(), 0).statusCode()).isEqualTo(200);
+
+        HttpResponse<String> synced = syncCheck(check);
+
+        assertThat(DeviceFixture.results(synced).values()).allMatch(v -> v.get(0).equals("APPLIED"));
+        assertThat(d.count("select count(*) from guest_check where id = ?", check)).isEqualTo(1);
+        assertThat(d.row("select reconciled_at is not null as done from offline_check_claim where check_id = ?", check)
+                .get("done")).isEqualTo(true);
+        HttpResponse<String> posPay = d.pay(pos.device().token(), check, DeviceFixture.payBody(UUID.randomUUID(), "CARD_PRESENT", 0));
+        assertThat(posPay.statusCode()).isEqualTo(409); // the guest already paid it from their phone
+        assertThat(body(posPay).get("error").asString()).isEqualTo("NOTHING_DUE");
+    }
+
+    @Test
+    void aClaimFindsNothingDueOnceThePosHasTakenPaymentOnTheSyncedCheck() {
+        UUID check = UUID.randomUUID();
+        syncCheck(check);
+        assertThat(d.pay(pos.device().token(), check, DeviceFixture.payBody(UUID.randomUUID(), "CARD_PRESENT", 0)).statusCode())
+                .isEqualTo(200);
+
+        HttpResponse<String> r = d.claimPay(signed(claim(check, nonce())), UUID.randomUUID(), 0);
+
+        assertThat(r.statusCode()).isEqualTo(409);
+        assertThat(body(r).get("error").asString()).isEqualTo("NOTHING_DUE");
+    }
+
+    @Test
+    void aSyncedCheckIdMustBeNewAndNotAnotherLocationsClaim() {
+        UUID loc2 = p.location(15, 5, 290, 30);
+        Signer elsewhere = d.enrolledSigner(loc2);
+        UUID taken = UUID.randomUUID();
+        assertThat(d.claimPay(signClaim(elsewhere.keys(), claimPayload(taken, loc2, elsewhere.device().id(), 4000, 290, 0,
+                4290, "USD", inOneHour(), nonce()).toString()), UUID.randomUUID(), 0).statusCode()).isEqualTo(200);
+
+        assertThat(DeviceFixture.results(syncCheck(taken)).values()).allMatch(v -> v.get(0).equals("CONFLICT"));
+        assertThat(d.count("select count(*) from guest_check where id = ?", taken)).isZero();
+
+        UUID reused = UUID.randomUUID();
+        syncCheck(reused);
+        assertThat(DeviceFixture.results(syncCheck(reused)).values()).allMatch(v -> v.get(0).equals("CONFLICT"));
     }
 
     @Test

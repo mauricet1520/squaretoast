@@ -316,6 +316,20 @@ public final class DeviceFixture {
         return b.toString();
     }
 
+    /** A guest withdraws their own unconfirmed payment, proving it with the payment's idempotency key. */
+    public HttpResponse<String> cancelPayment(UUID idempotencyKey) {
+        return send("POST", "/payments/cancel", JSON.createObjectNode().put("idempotencyKey", idempotencyKey.toString()).toString(), null);
+    }
+
+    /** ORDER_PLACED that also names the POS's own check id, as a POS that issued an offline claim does. */
+    public ObjectNode orderPlaced(UUID mutationId, UUID order, UUID location, Map<Integer, UUID> courseIds, List<Line> lines,
+                                  UUID checkId) {
+        ObjectNode m = orderPlaced(mutationId, order, location, courseIds, lines);
+        ObjectNode payload = (ObjectNode) JSON.readTree(m.get("payloadJson").asString());
+        payload.put("checkId", checkId.toString());
+        return m.put("payloadJson", payload.toString());
+    }
+
     public HttpResponse<String> claimPay(String claim, UUID idempotencyKey, long tipCents) {
         String b = JSON.createObjectNode().put("claim", claim).put("idempotencyKey", idempotencyKey.toString())
                 .put("tipCents", tipCents).toString();

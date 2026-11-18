@@ -132,6 +132,20 @@ public final class PaymentFixture {
                 .formatted(eventId, type, intentRef, amountCents, intentRef, bt);
     }
 
+    /** A payment_intent.* event, e.g. payment_failed after a decline or canceled. */
+    public static String intentEvent(String eventId, String type, String intentRef, String status) {
+        return """
+                {"id":"%s","object":"event","type":"%s","livemode":false,"created":1800000000,
+                 "data":{"object":{"id":"%s","object":"payment_intent","status":"%s"}}}"""
+                .formatted(eventId, type, intentRef, status);
+    }
+
+    /** Makes a payment look as if it was started {@code minutes} ago. */
+    public void agePayment(UUID idempotencyKey, int minutes) {
+        db.sql("update payment set created_at = now() - make_interval(mins => ?) where idempotency_key = ?")
+                .params(minutes, idempotencyKey).update();
+    }
+
     public HttpResponse<String> postWebhook(String payload) {
         return postWebhook(payload, StripeSignatures.header(webhookSecret, System.currentTimeMillis() / 1000, payload));
     }

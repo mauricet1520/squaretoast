@@ -151,6 +151,34 @@ class StripeConnectAdapterTest {
     }
 
     @Test
+    void cancelingAnIntentPostsToItsCancelEndpointOnThePlatformAccount() {
+        stripe.enqueue(200, "{\"id\":\"pi_123\",\"object\":\"payment_intent\",\"status\":\"canceled\"}");
+
+        adapter.cancelIntent("pi_123");
+
+        FakeStripe.Request r = stripe.takeRequest();
+        assertThat(r.method()).isEqualTo("POST");
+        assertThat(r.path()).isEqualTo("/v1/payment_intents/pi_123/cancel");
+        assertThat(r.header("Stripe-Account")).isNull();
+        assertThat(r.header("Authorization")).isEqualTo("Bearer " + SECRET_KEY);
+    }
+
+    @Test
+    void anIntentStripeWillNotCancelIsAGatewayException() {
+        stripe.enqueue(400, "{\"error\":{\"code\":\"payment_intent_unexpected_state\",\"message\":\"already succeeded\"}}");
+
+        assertThatThrownBy(() -> adapter.cancelIntent("pi_123"))
+                .isInstanceOf(GatewayException.class)
+                .extracting(e -> ((GatewayException) e).code()).isEqualTo("payment_intent_unexpected_state");
+    }
+
+    @Test
+    void intentRefMustBeAStripeId() {
+        assertThatThrownBy(() -> adapter.cancelIntent("pi_1/../x")).isInstanceOf(IllegalArgumentException.class);
+        assertThat(stripe.drain()).isEmpty();
+    }
+
+    @Test
     void terminalLocationRefMustBeAStripeId() {
         assertThatThrownBy(() -> adapter.createConnectionToken("tml_../x")).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> adapter.createConnectionToken("acct_1")).isInstanceOf(IllegalArgumentException.class);

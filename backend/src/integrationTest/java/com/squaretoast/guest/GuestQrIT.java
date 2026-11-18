@@ -52,6 +52,8 @@ class GuestQrIT {
         r.add("squaretoast.stripe.webhook-secrets", () -> "whsec_it");
     }
 
+    static volatile boolean stripeRefusesCancel;
+
     @AfterAll
     static void stopStripe() {
         STRIPE.close();
@@ -77,11 +79,17 @@ class GuestQrIT {
     @BeforeEach
     void seed() {
         STRIPE.drain();
+        stripeRefusesCancel = false;
         STRIPE.fallback(r -> {
             if (r.path().equals("/v1/payment_intents")) {
                 String id = "pi_" + String.valueOf(r.header("Idempotency-Key")).replace("-", "");
                 return new FakeStripe.Response(200,
                         "{\"id\":\"%s\",\"object\":\"payment_intent\",\"client_secret\":\"%s_secret_x\"}".formatted(id, id));
+            }
+            if (r.path().startsWith("/v1/payment_intents/") && r.path().endsWith("/cancel")) {
+                return stripeRefusesCancel // e.g. the guest finished paying a moment ago
+                        ? new FakeStripe.Response(400, "{\"error\":{\"code\":\"payment_intent_unexpected_state\"}}")
+                        : new FakeStripe.Response(200, "{\"object\":\"payment_intent\",\"status\":\"canceled\"}");
             }
             return new FakeStripe.Response(404, "{\"error\":{\"code\":\"resource_missing\"}}");
         });
@@ -269,6 +277,113 @@ class GuestQrIT {
         HttpResponse<String> second = d.guestPay(qr, check, UUID.randomUUID(), 0);
         assertThat(second.statusCode()).isEqualTo(409);
         assertThat(body(second).get("error").asString()).isEqualTo("NOTHING_DUE");
+    }
+
+    // ---------------------------------------------------------------- audit: payments that never finish
+
+    private String intentOf(UUID key) {
+        return String.valueOf(p.payment(key).get("processor_intent_ref"));
+    }
+
+    private List<String> cancelsSent() {
+        return STRIPE.drain().stream().filter(x -> x.path().endsWith("/cancel")).map(FakeStripe.Request::path).toList();
+    }
+
+    @Test
+    void anAbandonedPaymentIsCanceledAtStripeAndStopsBlockingTheCheck() {
+        UUID check = acceptedCheck();
+        UUID abandoned = UUID.randomUUID();
+        assertThat(d.guestPay(qr, check, abandoned, 0).statusCode()).isEqualTo(200);
+        assertThat(d.guestPay(qr, check, UUID.randomUUID(), 0).statusCode()).isEqualTo(409); // still fresh: in flight
+
+        p.agePayment(abandoned, 16);
+        STRIPE.drain();
+        HttpResponse<String> r = d.guestPay(qr, check, UUID.randomUUID(), 0);
+
+        assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+        assertThat(p.payment(abandoned).get("status")).isEqualTo("CANCELED");
+        assertThat(cancelsSent()).containsExactly("/v1/payment_intents/" + intentOf(abandoned) + "/cancel");
+    }
+
+    @Test
+    void aStalePaymentStripeWillNotCancelKeepsBlockingTheCheck() {
+        UUID check = acceptedCheck();
+        UUID stale = UUID.randomUUID();
+        d.guestPay(qr, check, stale, 0);
+        p.agePayment(stale, 16);
+        stripeRefusesCancel = true; // it may have just succeeded; charging again could double-charge
+
+        HttpResponse<String> r = d.guestPay(qr, check, UUID.randomUUID(), 0);
+
+        assertThat(r.statusCode()).isEqualTo(409);
+        assertThat(body(r).get("error").asString()).isEqualTo("NOTHING_DUE");
+        assertThat(p.payment(stale).get("status")).isEqualTo("PENDING");
+    }
+
+    @Test
+    void aGuestCanWithdrawTheirOwnPaymentToChangeTheTip() {
+        UUID check = acceptedCheck();
+        UUID first = UUID.randomUUID();
+        d.guestPay(qr, check, first, 500);
+        STRIPE.drain();
+
+        HttpResponse<String> cancel = d.cancelPayment(first);
+
+        assertThat(cancel.statusCode()).isEqualTo(204);
+        assertThat(p.payment(first).get("status")).isEqualTo("CANCELED");
+        assertThat(cancelsSent()).containsExactly("/v1/payment_intents/" + intentOf(first) + "/cancel");
+        HttpResponse<String> again = d.guestPay(qr, check, UUID.randomUUID(), 700);
+        assertThat(again.statusCode()).isEqualTo(200);
+        assertThat(STRIPE.drain().stream().filter(x -> x.path().equals("/v1/payment_intents")).reduce((a, b) -> b)
+                .orElseThrow().formValue("amount")).isEqualTo("4132"); // 3432 + 700
+    }
+
+    @Test
+    void onlyAnUnfinishedGuestPaymentCanBeWithdrawn() {
+        UUID check = acceptedCheck();
+        assertThat(d.cancelPayment(UUID.randomUUID()).statusCode()).isEqualTo(404);
+
+        UUID done = UUID.randomUUID();
+        d.guestPay(qr, check, done, 0);
+        m.exec("update payment set status = 'SUCCEEDED' where idempotency_key = ?", done);
+        HttpResponse<String> late = d.cancelPayment(done);
+        assertThat(late.statusCode()).isEqualTo(409);
+        assertThat(body(late).get("error").asString()).isEqualTo("NOT_CANCELABLE");
+
+        UUID posKey = UUID.randomUUID(); // a POS card-present payment is the device's, not a guest's
+        UUID posCheck = acceptedCheck();
+        assertThat(d.pay(pos.token(), posCheck, DeviceFixture.payBody(posKey, "CARD_PRESENT", 0)).statusCode()).isEqualTo(200);
+        assertThat(d.cancelPayment(posKey).statusCode()).isEqualTo(404);
+        assertThat(p.payment(posKey).get("status")).isEqualTo("PENDING");
+    }
+
+    @Test
+    void aDeclinedPaymentFreesTheCheckAtOnceAndALaterSuccessIsStillRecorded() {
+        UUID check = acceptedCheck();
+        UUID declined = UUID.randomUUID();
+        d.guestPay(qr, check, declined, 0);
+        String intent = intentOf(declined);
+
+        assertThat(p.postWebhook(PaymentFixture.intentEvent("evt_" + UUID.randomUUID(), "payment_intent.payment_failed",
+                intent, "requires_payment_method")).statusCode()).isEqualTo(200);
+        assertThat(p.payment(declined).get("status")).isEqualTo("FAILED");
+        assertThat(d.guestPay(qr, check, UUID.randomUUID(), 0).statusCode()).isEqualTo(200);
+
+        // The guest retried the same card form and it went through: the money is real, so it is recorded.
+        assertThat(p.postWebhook(PaymentFixture.chargeEvent("evt_" + UUID.randomUUID(), "charge.succeeded", intent, 3432, null))
+                .statusCode()).isEqualTo(200);
+        assertThat(p.payment(declined).get("status")).isEqualTo("SUCCEEDED");
+    }
+
+    @Test
+    void aCanceledIntentEventMarksThePaymentCanceled() {
+        UUID check = acceptedCheck();
+        UUID key = UUID.randomUUID();
+        d.guestPay(qr, check, key, 0);
+
+        p.postWebhook(PaymentFixture.intentEvent("evt_" + UUID.randomUUID(), "payment_intent.canceled", intentOf(key), "canceled"));
+
+        assertThat(p.payment(key).get("status")).isEqualTo("CANCELED");
     }
 
     @Test

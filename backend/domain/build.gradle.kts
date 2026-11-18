@@ -8,7 +8,12 @@ dependencies {
     // NullAwayEnforcementTest compiles canary sources in-process with the real build flags.
     testImplementation(libs.errorprone.core)
     testImplementation(libs.nullaway)
+    // Reads the JSON vectors shared with the Android POS (test classpath only; domain stays dependency-free).
+    testImplementation(platform(libs.spring.boot.bom))
+    testImplementation("tools.jackson.core:jackson-databind")
 }
+
+sourceSets["test"].resources.srcDir(rootProject.file("shared-test-vectors"))
 
 tasks.test {
     jvmArgs(

@@ -361,7 +361,7 @@ SDK details:
 
 ## 9. Risks and open questions
 
-1. **Stripe Terminal 6.0.0 API surface (resolved in Slice 5).** Checked against the 6.0.0 AARs. Discovery is `TapToPayDiscoveryConfiguration(isSimulated)`. Connection is `TapToPayConnectionConfiguration(useCase = TapUseCase.Pay(locationId), autoReconnectOnUnexpectedDisconnect, tapToPayReaderListener)`; there is **no `onBehalfOf`** parameter. The connected account is routed by the server-side PaymentIntent (Slice 4), and the Terminal Location must belong to that account. `Terminal.init` now requires a `LocaleConfig`, and `compileSdk` must be ≥ 35.
+1. **Stripe Terminal 6.0.0 API surface (resolved in Slice 5).** Checked against the 6.0.0 AARs. Discovery is `TapToPayDiscoveryConfiguration(isSimulated)`. Connection is `TapToPayConnectionConfiguration(useCase = TapUseCase.Pay(locationId), autoReconnectOnUnexpectedDisconnect, tapToPayReaderListener)`; there is **no `onBehalfOf`** parameter. The connected account is routed by the server-side PaymentIntent (Slice 4). For destination charges, Stripe wants the Terminal Location **and** connection tokens on the **platform** account (platform key, no `Stripe-Account` header), with one Location per merchant location. `Terminal.init` now requires a `LocaleConfig`, and `compileSdk` must be ≥ 35.
 2. **Tap to Pay with developer options.** Stripe blocks production Tap to Pay when debugging is enabled. QA on real devices needs release-signed builds.
 3. **Tip-pool and tax legal data.** Seed profiles cover CA, ME, MA, DE and a default. Real rate tables need a provider (out of scope for v1) and counsel review.
 4. **`btree_gist` on managed Postgres (resolved).** It has been a *trusted* extension since PG 13, so a non-superuser database owner can create it. `FlywayV1IT.migrationsRunAsANonSuperuserDatabaseOwner` proves the full migration set runs that way on an empty database. Reference tables (`currency`, `state_compliance_profile`) should be writable only by the migration role, not the app role. The deploy role needs `CREATE` on the database; no superuser is required. Minimum supported server: PostgreSQL 13.
@@ -393,3 +393,84 @@ SDK details:
      - `transitionCourse` is not idempotent when retried with the same mutationId; the retry fails rather than double-applying.
      - Missing Room entities: seats, guest checks and allocations, inventory snapshots, offline claims, hub peers.
 10. **Question:** should guest QR ordering in v1 also work offline via the LAN hub (guest phone on restaurant Wi-Fi)? The plan assumes **cloud-only** QR ordering, while QR *pay* is offline-capable via signed claims.
+
+---
+
+## 10. Slice 5b — device auth, sync, connection tokens, check payments (pending approval)
+
+Goal: the backend half of the Android POS, so its outbox drains, Tap to Pay can pass its gate, and a payment's amount is always computed by the server. Offline QR **claim redemption** (D8) moves to Slice 6 with the guest pay page that calls it.
+
+**V5 migration**
+- `device`: replace `ed25519_pubkey` with `public_key_spki bytea` (ECDSA P-256, per §9 item 9). Add `token_hash bytea unique not null` (SHA-256 of the device token), `label`, `enrolled_at`. The table is empty, so nothing needs migrating.
+- New `device_enrollment(code_hash bytea pk, location_id, expires_at, used_at, device_id)`. Codes are single-use, expire after 15 minutes and are stored hashed. Merchant-admin tooling that issues them is out of scope; tests seed them.
+- `location.stripe_terminal_location_id text` (`tml_…`, a platform-account Location), nullable.
+- `processed_client_mutation.reason text`, so a resent conflicted mutation returns the same reason.
+
+**Device enrollment and auth** (a plain servlet filter, no Spring Security)
+- `POST /api/v1/devices/enroll {code, publicKeySpki, label}` is public. It accepts only a P-256 key and returns `{deviceId, locationId, deviceToken}`. The token is 256-bit random, shown once and stored only as a hash. A bad, expired or reused code gets the same 400.
+- `DeviceAuthFilter` guards `/api/v1/devices/me`, `/api/v1/sync/**`, `/api/v1/terminal/**` and `/api/v1/checks/**`. It reads `Authorization: Bearer`, looks up the hash, and rejects revoked devices with 401. The request carries the device's `deviceId` and `locationId`.
+- `GET /api/v1/devices/me` returns `{deviceId, locationId, terminalLocationId}`.
+- The existing Slice 2 order-commit, menu and 86 endpoints stay unauthenticated for now (new risk). Putting them behind the same filter is a one-line change once the KDS and POS send tokens.
+
+**`POST /api/v1/sync/mutations`** (at most 50 per batch, otherwise 400; one DB transaction per mutation)
+- **Dedupe:** a `mutationId` already seen from this device returns DUPLICATE if it was applied, or CONFLICT with its stored reason. A `mutationId` owned by another device returns CONFLICT `MUTATION_ID_TAKEN`.
+- **ORDER_PLACED:**
+  - Its location must be the device's location; otherwise CONFLICT `FORBIDDEN_LOCATION`.
+  - It creates the order (DINE_IN, origin device), seats, courses and lines. Lines are **re-priced from `menu_item`**, so the device's price is ignored. It also creates one guest check covering every line at 1/1.
+  - It then runs the Slice 2 `OrderCommitService.commit`, so inventory is decremented at commit. OVERSOLD or ITEM_86ED gives CONFLICT with that reason, and nothing is written.
+- **COURSE_TRANSITIONED:**
+  - The course must be in the device's location.
+  - The server applies the transition from its own current state. A payload `from` that doesn't match gives CONFLICT `STALE_STATE`.
+  - It writes `course_transition` and updates `course`. Android `FIRED` maps to the DB's `FIRE`; `PREPPING` is reserved for the KDS.
+- An unknown type or a malformed payload gives CONFLICT `INVALID_MUTATION`.
+- **Domain:** Java `CourseStateMachine` and `SplitAllocator`, tested against the same `shared-test-vectors/*.json` as Android.
+
+**`POST /api/v1/terminal/connection_token`**
+- New port method `PaymentGatewayPort.createConnectionToken(String terminalLocationRef)`.
+- The adapter calls Stripe `POST /v1/terminal/connection_tokens` with `location=tml_…`, using the platform key and no `Stripe-Account` header.
+- If the location has no `stripe_terminal_location_id`, the endpoint returns 409.
+
+**`POST /api/v1/checks/{checkId}/payments {idempotencyKey, method, tipCents}`** (closes §9 item 8, "amount from the caller")
+- The check must belong to the device's location; otherwise 404. `tipCents` must be ≥ 0.
+- **Balance**, computed by `CheckBalance`:
+  - start with the lines allocated to this check, each line's amount split across its checks with `SplitAllocator`;
+  - add modifiers and service charges;
+  - add tax from `TaxEngine`, using the location's state rules and the order's channel;
+  - subtract this check's SUCCEEDED payments, and its PENDING ones under other idempotency keys.
+- If the balance is ≤ 0, it returns 409 `NOTHING_DUE`. Otherwise it charges balance + tip through the Slice 4 `PaymentService.start` and returns `{paymentId, clientSecret}`.
+- There is no `amount` field in the request.
+
+**Android wiring**
+- `CloudApi.enroll(code)` sends the Keystore public key, and `CloudApi.me()` fetches the device's details.
+- The device token is stored AES-GCM-encrypted under an Android Keystore key and feeds `CloudApi`'s credential.
+- `terminalLocationId` from `/devices/me` replaces the empty constant, so Tap to Pay can pass the gate once the backend issues tokens.
+- A one-field enrollment screen is shown while the device is unenrolled.
+
+**RED tests first**
+- **Domain:** `CourseStateMachineTest` and `SplitAllocatorTest` against the shared vectors.
+- **Adapter:** a connection-token form test: `location` is sent, there is no `Stripe-Account` header, and the Bearer is the platform key.
+- **`DeviceSyncIT` (enrollment and auth):**
+  - enrollment: a valid code works once; a reused or expired code, or a non-P-256 key, gets 400;
+  - auth: a missing, wrong or revoked token gets 401 on every guarded path;
+  - `/devices/me` returns the right fields.
+- **`DeviceSyncIT` (sync):**
+  - ORDER_PLACED re-prices lines, creates the check and decrements inventory;
+  - a resend gets DUPLICATE and changes nothing;
+  - a foreign location, OVERSOLD, a mutation ID owned by another device, and a stale course state each give CONFLICT with no writes;
+  - a resent conflicted mutation gets the same CONFLICT and reason;
+  - a course FIRE writes the transition row;
+  - a batch of 51 gets 400.
+- **`CheckPaymentIT`:**
+  - the Stripe amount equals subtotal + tax + tip for a CA location, and the client cannot set it;
+  - a second payment on a fully pending check gets 409;
+  - another location's check gets 404, and a negative tip gets 400;
+  - the connection token passes `location`, and a location without a Terminal Location gets 409.
+- **Android:** `CloudApiTest` with Ktor MockEngine: enroll sends the code and SPKI; every call carries the Bearer; there is no call without a credential.
+
+**Not in 5b:**
+- deferred to Slice 6: offline claim redemption and nonce replay checks;
+- key-attestation verification (an Android attestation chain to Google's roots);
+- Bluetooth reader discovery;
+- showing the offline QR code;
+- Room entities for seats and checks;
+- linking the hub's course board to Room.

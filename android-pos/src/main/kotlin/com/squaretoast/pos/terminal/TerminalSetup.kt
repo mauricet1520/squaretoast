@@ -18,8 +18,8 @@ object TerminalConfigs {
     fun tapToPayDiscovery(debuggable: Boolean) = DiscoveryConfiguration.TapToPayDiscoveryConfiguration(isSimulated = debuggable)
 
     /**
-     * The location is a Terminal Location owned by the merchant's connected account. Routing to that account
-     * (on_behalf_of, transfer_data) is set server-side on the PaymentIntent, not here.
+     * The location is a platform-account Terminal Location created for this merchant location. Routing to the
+     * connected account (on_behalf_of, transfer_data) is set server-side on the PaymentIntent, not here.
      */
     fun tapToPayConnection(locationId: String, listener: TapToPayReaderListener) =
         ConnectionConfiguration.TapToPayConnectionConfiguration(

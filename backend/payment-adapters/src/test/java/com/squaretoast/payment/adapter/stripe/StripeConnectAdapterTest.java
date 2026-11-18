@@ -134,4 +134,33 @@ class StripeConnectAdapterTest {
         assertThatThrownBy(() -> adapter.createCardPresentIntent(charge(UUID.randomUUID(), UUID.randomUUID())))
                 .isInstanceOfSatisfying(GatewayException.class, e -> assertThat(e.retryable()).isTrue());
     }
+
+    @Test
+    void connectionTokensAreCreatedOnThePlatformAccountForTheTerminalLocation() {
+        stripe.enqueue(200, "{\"object\":\"terminal.connection_token\",\"secret\":\"pst_test_abc\",\"location\":\"tml_Main1\"}");
+
+        assertThat(adapter.createConnectionToken("tml_Main1")).isEqualTo("pst_test_abc");
+
+        FakeStripe.Request r = stripe.takeRequest();
+        assertThat(r.method()).isEqualTo("POST");
+        assertThat(r.path()).isEqualTo("/v1/terminal/connection_tokens");
+        assertThat(r.formValue("location")).isEqualTo("tml_Main1");
+        assertThat(r.header("Authorization")).isEqualTo("Bearer " + SECRET_KEY);
+        assertThat(r.header("Stripe-Account")).isNull(); // destination charges: platform account, no Connect header
+        assertThat(r.header("Stripe-Version")).isEqualTo(StripeConnectAdapter.API_VERSION);
+    }
+
+    @Test
+    void terminalLocationRefMustBeAStripeId() {
+        assertThatThrownBy(() -> adapter.createConnectionToken("tml_../x")).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> adapter.createConnectionToken("acct_1")).isInstanceOf(IllegalArgumentException.class);
+        assertThat(stripe.drain()).isEmpty();
+    }
+
+    @Test
+    void connectionTokenServerErrorsAreRetryable() {
+        stripe.enqueue(503, "{\"error\":{\"type\":\"api_error\",\"code\":\"service_unavailable\"}}");
+        assertThatThrownBy(() -> adapter.createConnectionToken("tml_Main1"))
+                .isInstanceOfSatisfying(GatewayException.class, e -> assertThat(e.retryable()).isTrue());
+    }
 }

@@ -1,0 +1,19 @@
+{
+  "description": "Integer-cent allocation by weights. Floor each exact share, then give the leftover cents one each by largest fractional remainder, ties to the lower index. Shares always sum to the amount. A null 'expected' means the input is rejected.",
+  "cases": [
+    {"amount": 1000, "weights": [1, 1, 1],          "expected": [334, 333, 333]},
+    {"amount": 1001, "weights": [1, 1],             "expected": [501, 500]},
+    {"amount": 999,  "weights": [2, 1],             "expected": [666, 333]},
+    {"amount": 100,  "weights": [1, 1, 1, 1, 1, 1], "expected": [17, 17, 17, 17, 16, 16]},
+    {"amount": 100,  "weights": [1, 2, 3],          "expected": [17, 33, 50]},
+    {"amount": 10,   "weights": [3, 3, 4],          "expected": [3, 3, 4]},
+    {"amount": 1000, "weights": [0, 1],             "expected": [0, 1000]},
+    {"amount": 0,    "weights": [1, 1],             "expected": [0, 0]},
+    {"amount": 5,    "weights": [1],                "expected": [5]},
+    {"amount": 2,    "weights": [1, 1, 1],          "expected": [1, 1, 0]},
+    {"amount": -1,   "weights": [1, 1],             "expected": null},
+    {"amount": 100,  "weights": [],                 "expected": null},
+    {"amount": 100,  "weights": [0, 0],             "expected": null},
+    {"amount": 100,  "weights": [1, -1],            "expected": null}
+  ]
+}

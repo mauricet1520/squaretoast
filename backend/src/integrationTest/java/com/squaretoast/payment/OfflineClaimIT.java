@@ -340,6 +340,74 @@ class OfflineClaimIT {
         assertThat(DeviceFixture.results(syncCheck(reused)).values()).allMatch(v -> v.get(0).equals("CONFLICT"));
     }
 
+    // ---------------------------------------------------------------- slice 7: full payment, reconciliation, tip limits
+
+    private void settle(UUID key) {
+        Map<String, Object> pay = p.payment(key);
+        HttpResponse<String> hook = p.postWebhook(PaymentFixture.chargeEvent("evt_" + UUID.randomUUID(), "charge.succeeded",
+                String.valueOf(pay.get("processor_intent_ref")), n(pay.get("amount_cents")), "txn_1"));
+        assertThat(hook.statusCode()).isEqualTo(200);
+    }
+
+    private String claimStatus(UUID check) {
+        return String.valueOf(d.row("select status from offline_check_claim where check_id = ?", check).get("status"));
+    }
+
+    @Test
+    void aPaidClaimIsReconciledWhenThePosSyncsTheSameCheck() {
+        UUID check = UUID.randomUUID();
+        UUID key = UUID.randomUUID();
+        assertThat(d.claimPay(signed(claim(check, nonce())), key, 0).statusCode()).isEqualTo(200);
+        settle(key);
+        assertThat(claimStatus(check)).isEqualTo("PAID");
+
+        assertThat(DeviceFixture.results(syncCheck(check)).values()).allMatch(v -> v.get(0).equals("APPLIED"));
+
+        assertThat(claimStatus(check)).isEqualTo("RECONCILED");
+        HttpResponse<String> posPay = d.pay(pos.device().token(), check, DeviceFixture.payBody(UUID.randomUUID(), "CARD_PRESENT", 0));
+        assertThat(body(posPay).get("error").asString()).isEqualTo("NOTHING_DUE");
+    }
+
+    @Test
+    void aClaimIsPaidOnlyOnceEverythingItOwesHasSettled() {
+        UUID check = UUID.randomUUID();
+        // The POS synced one burger on this check and started a card payment for it ($15 + tax)...
+        assertThat(DeviceFixture.results(d.sync(pos.device().token(), List.of(d.orderPlaced(UUID.randomUUID(), UUID.randomUUID(),
+                loc, Map.of(1, UUID.randomUUID()), List.of(new Line(burger, 1, 1, 1, 1500)), check)))).values())
+                .allMatch(v -> v.get(0).equals("APPLIED"));
+        UUID posKey = UUID.randomUUID();
+        assertThat(d.pay(pos.device().token(), check, DeviceFixture.payBody(posKey, "CARD_PRESENT", 0)).statusCode()).isEqualTo(200);
+        // ...while the guest pays the rest of the signed $42.90 from the claim.
+        UUID claimKey = UUID.randomUUID();
+        assertThat(d.claimPay(signed(claim(check, nonce())), claimKey, 0).statusCode()).isEqualTo(200);
+        assertThat(n(p.payment(claimKey).get("amount_cents")) + n(p.payment(posKey).get("amount_cents"))).isEqualTo(4290);
+
+        settle(claimKey);
+        assertThat(claimStatus(check)).as("only part of the claim has settled").isEqualTo("PENDING");
+
+        settle(posKey);
+        assertThat(claimStatus(check)).isEqualTo("RECONCILED"); // fully paid, and the POS has already synced it
+    }
+
+    @Test
+    void aTipAboveTenThousandDollarsIsRefusedOnBothThePosAndTheClaim() {
+        String token = signed(claim(UUID.randomUUID(), nonce()));
+        UUID check = UUID.randomUUID();
+        syncCheck(check);
+
+        for (long tip : new long[] {1_000_001L, Long.MAX_VALUE}) {
+            HttpResponse<String> viaClaim = d.claimPay(token, UUID.randomUUID(), tip);
+            assertThat(viaClaim.statusCode()).as("claim, tip %d", tip).isEqualTo(422);
+            assertThat(body(viaClaim).get("error").asString()).isEqualTo("TIP_OUT_OF_RANGE");
+            HttpResponse<String> viaPos = d.pay(pos.device().token(), check, DeviceFixture.payBody(UUID.randomUUID(), "CARD_PRESENT", tip));
+            assertThat(viaPos.statusCode()).as("POS, tip %d", tip).isEqualTo(422);
+            assertThat(body(viaPos).get("error").asString()).isEqualTo("TIP_OUT_OF_RANGE");
+        }
+        assertThat(d.claimPay(token, UUID.randomUUID(), 1_000_000L).statusCode()).isEqualTo(200);
+        assertThat(d.pay(pos.device().token(), check, DeviceFixture.payBody(UUID.randomUUID(), "CARD_PRESENT", 1_000_000L))
+                .statusCode()).isEqualTo(200);
+    }
+
     @Test
     void aNegativeTipOrMissingKeyIsABadRequest() {
         String token = signed(claim(UUID.randomUUID(), nonce()));

@@ -214,6 +214,20 @@ class KdsIT {
     }
 
     @Test
+    void revokingAKitchenScreenEndsItsOpenStream() throws Exception {
+        Device doomed = d.enrolledDevice(loc);
+        try (SseClient mine = SseClient.open(d.kdsStreamUrl(d.streamTicket(doomed.token()), null), null);
+             SseClient other = SseClient.open(d.kdsStreamUrl(d.streamTicket(kds.token()), null), null)) {
+            assertThat(mine.status()).isEqualTo(200);
+
+            d.revoke(doomed.id());
+
+            assertThat(mine.endsWithin(Duration.ofSeconds(20))).as("revoked device's stream closed").isTrue();
+            assertThat(other.endsWithin(Duration.ofMillis(100))).as("another device's stream stays open").isFalse();
+        }
+    }
+
+    @Test
     void kdsEndpointsNeedADeviceToken() {
         assertThat(d.board(null).statusCode()).isEqualTo(401);
         assertThat(d.streamTicketResponse(null).statusCode()).isEqualTo(401);

@@ -57,6 +57,11 @@ public final class SseClient implements AutoCloseable {
         return e;
     }
 
+    /** True if the server ended the stream within {@code timeout}. */
+    public boolean endsWithin(Duration timeout) throws InterruptedException {
+        return reader.join(timeout);
+    }
+
     public Event poll(Duration timeout) throws InterruptedException {
         return events.poll(timeout.toMillis(), TimeUnit.MILLISECONDS);
     }

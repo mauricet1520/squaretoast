@@ -1,0 +1,6 @@
+# Single source of truth for Error Prone / NullAway flags.
+# Read by build-logic (all JavaCompile tasks) AND by NullAwayEnforcementTest.
+-XepDisableWarningsInGeneratedCode
+-Xep:NullAway:ERROR
+-XepOpt:NullAway:OnlyNullMarked=true
+-XepOpt:NullAway:JSpecifyMode=true

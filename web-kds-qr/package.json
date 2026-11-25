@@ -1,0 +1,22 @@
+{
+  "name": "squaretoast-web-kds-qr",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@stripe/stripe-js": "7.3.0",
+    "preact": "10.26.9"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0",
+    "typescript": "5.8.3",
+    "vite": "6.3.5",
+    "vitest": "3.2.4"
+  }
+}

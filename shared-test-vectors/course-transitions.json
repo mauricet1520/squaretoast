@@ -1,0 +1,25 @@
+{
+  "description": "Course state machine. Every (from, action) pair is listed; a null 'to' means the transition is illegal. RECALL steps back one state so KDS bumps are reversible.",
+  "transitions": [
+    {"from": "HOLD",   "action": "FIRE",   "to": "FIRED"},
+    {"from": "HOLD",   "action": "UNFIRE", "to": null},
+    {"from": "HOLD",   "action": "BUMP",   "to": null},
+    {"from": "HOLD",   "action": "RECALL", "to": null},
+    {"from": "HOLD",   "action": "SERVE",  "to": null},
+    {"from": "FIRED",  "action": "FIRE",   "to": null},
+    {"from": "FIRED",  "action": "UNFIRE", "to": "HOLD"},
+    {"from": "FIRED",  "action": "BUMP",   "to": "READY"},
+    {"from": "FIRED",  "action": "RECALL", "to": null},
+    {"from": "FIRED",  "action": "SERVE",  "to": null},
+    {"from": "READY",  "action": "FIRE",   "to": null},
+    {"from": "READY",  "action": "UNFIRE", "to": null},
+    {"from": "READY",  "action": "BUMP",   "to": null},
+    {"from": "READY",  "action": "RECALL", "to": "FIRED"},
+    {"from": "READY",  "action": "SERVE",  "to": "SERVED"},
+    {"from": "SERVED", "action": "FIRE",   "to": null},
+    {"from": "SERVED", "action": "UNFIRE", "to": null},
+    {"from": "SERVED", "action": "BUMP",   "to": null},
+    {"from": "SERVED", "action": "RECALL", "to": "READY"},
+    {"from": "SERVED", "action": "SERVE",  "to": null}
+  ]
+}

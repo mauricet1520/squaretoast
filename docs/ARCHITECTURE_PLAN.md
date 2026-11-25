@@ -12,7 +12,7 @@ Local toolchain found: JDK 21 on PATH (Java 25 will be provisioned by the Gradle
 | D1 | Split the backend into `:backend` (Boot app), `:backend:domain` (pure Java, ports, no Spring) and `:backend:payment-adapters`. `:backend:check` depends on both subprojects' `check`. | Avoids a cycle: the port lives in domain, the adapter implements it, the app wires both. `:backend:check` stays the single command from CLAUDE.md. |
 | D2 | **API versioning by path segment** (`/api/v1/...`) using SF7 `ApiVersionConfigurer`. Header versioning is not used. | Browser `EventSource` (SSE) cannot send custom headers. |
 | D3 | Stripe is called over **declarative `@HttpExchange` + `RestClient`**, with no `stripe-java`. Webhook HMAC is verified by hand. | No vendor SDK in the backend means Jackson 2 is probably **not needed at all**. The ArchUnit/Gradle guard still ships and fences any future SDK. |
-| D4 | The Jackson-2 fence bans `com.fasterxml.jackson..` **except `com.fasterxml.jackson.annotation..`**. | Jackson 3 deliberately keeps `jackson-annotations` in the old 2.x package. A naive rule would fail on Boot itself. |
+| D4 | The Jackson-2 fence bans `com.fasterxml.jackson..` **except `com.fasterxml.jackson.annotation..`**. It is enforced on **compile** classpaths (Gradle exclude) plus ArchUnit over our bytecode. | Jackson 3 deliberately keeps `jackson-annotations` in the old 2.x package. A naive rule would fail on Boot itself. *Slice 1 finding:* `jackson-databind` 2.20 still arrives on `:backend` **runtime** classpath transitively (third-party, e.g. Flyway), so the fence is "our code cannot compile against it", not "absent from the JVM". |
 | D5 | Tax rates are stored as **ppm** (`rate_ppm`, 8.875% = 88 750). Money is `bigint` cents with `char(3)` currency. | bps can't express 8.875%. No floating point anywhere. |
 | D6 | The LAN hub serves the KDS bundle **itself** over `http://<lan-ip>:8787`. | An HTTPS-origin PWA can't call `http://192.168.x.x` (mixed content + Private Network Access). In LAN mode there is no service worker, because there is no secure context. The cloud origin is the installable PWA. |
 | D7 | The hub runs as a ForegroundService of type **`connectedDevice`**, not `dataSync`. | Android 15 caps `dataSync` at 6 h/day, and a hub must last a full shift. `CHANGE_WIFI_STATE` satisfies the type's runtime prerequisite. |
@@ -361,8 +361,259 @@ SDK details:
 
 ## 9. Risks and open questions
 
-1. **Stripe Terminal 6.0.0 API surface.** I'll verify the class names and the `onBehalfOf` connection param at the start of Slice 5, before writing tests.
+1. **Stripe Terminal 6.0.0 API surface (resolved in Slice 5).** Checked against the 6.0.0 AARs. Discovery is `TapToPayDiscoveryConfiguration(isSimulated)`. Connection is `TapToPayConnectionConfiguration(useCase = TapUseCase.Pay(locationId), autoReconnectOnUnexpectedDisconnect, tapToPayReaderListener)`; there is **no `onBehalfOf`** parameter. The connected account is routed by the server-side PaymentIntent (Slice 4). For destination charges, Stripe wants the Terminal Location **and** connection tokens on the **platform** account (platform key, no `Stripe-Account` header), with one Location per merchant location. `Terminal.init` now requires a `LocaleConfig`, and `compileSdk` must be ≥ 35.
 2. **Tap to Pay with developer options.** Stripe blocks production Tap to Pay when debugging is enabled. QA on real devices needs release-signed builds.
 3. **Tip-pool and tax legal data.** Seed profiles cover CA, ME, MA, DE and a default. Real rate tables need a provider (out of scope for v1) and counsel review.
-4. **Single-hub topology.** v1 assumes one hub device per location. Hub failover election is deferred.
-5. **Question:** should guest QR ordering in v1 also work offline via the LAN hub (guest phone on restaurant Wi-Fi)? The plan assumes **cloud-only** QR ordering, while QR *pay* is offline-capable via signed claims.
+4. **`btree_gist` on managed Postgres (resolved).** It has been a *trusted* extension since PG 13, so a non-superuser database owner can create it. `FlywayV1IT.migrationsRunAsANonSuperuserDatabaseOwner` proves the full migration set runs that way on an empty database. Reference tables (`currency`, `state_compliance_profile`) should be writable only by the migration role, not the app role. The deploy role needs `CREATE` on the database; no superuser is required. Minimum supported server: PostgreSQL 13.
+5. **SSE fan-out runs on the committing thread (Slice 2).** After commit, `SseBroadcaster` writes to every subscriber of the location under one lock. A client whose TCP buffer is full can delay that location's commit responses until its write fails or the 30-minute emitter timeout. Before production: per-subscriber bounded queues drained by their own virtual thread, plus SSE heartbeats to detect dead clients sooner. Separately, the deadlock test uses two inventory rows and proves ordering through the sorted demand, not through SQL alone.
+6. **Single-hub topology.** v1 assumes one hub device per location. Hub failover election is deferred.
+7. **Question (counsel): card fee recovered from tips.** §4 defines `total_card_fee` as the Stripe fee *plus* the platform's `application_fee_amount`. That is the merchant's real cost, but it means part of the platform's own revenue can be recovered from employee tips. The safer reading passes only the processor fee. `TipFeeCalculator` takes whatever fee the caller passes, so this is decided where Slice 4 wires it up.
+8. **Slice 4 payment follow-ups.**
+   - **Amount from the caller.** `PaymentService.start` trusts the caller's amount and tip, so no REST endpoint calls it yet. The Slice 5 controller must check the amount against the check's server-computed balance and authenticate the device.
+   - **Mismatched charges.** A charge whose amount or currency doesn't match the stored payment is acknowledged with 200 and logged, but not settled; retrying cannot fix it. It needs a reconciliation record or alert, not silence.
+   - **Fee currency.** The processor fee currency comes from the balance transaction. If it ever differs from the payment's currency (cross-currency Connect settlement), `CardSettlement` throws and the event fails on every retry. That can't happen while only USD is allowed.
+   - **Stripe call inside a transaction.** The fee lookup holds a pooled connection and the payment row lock for up to 20 s. Move it ahead of the transaction, or onto an outbox, before high volume.
+   - **Body size.** The webhook body is read into memory with no cap. Add a request-size limit at the edge.
+   - **Webhook URL.** Stripe must be configured to call `/api/v1/webhooks/stripe`.
+9. **Slice 5 deviations and follow-ups (Slice 5b = backend + wiring).**
+   - **Claim key is ECDSA P-256, not Ed25519 (amends D8).** Android Keystore supports P-256 on every API level from 23, but Ed25519 only on some API 33+ devices. The backend verifies `SHA256withECDSA`.
+   - **No backend endpoints yet.** The POS calls `POST /api/v1/sync/mutations`, `POST /api/v1/terminal/connection_token` and `POST /api/v1/checks/{id}/payments`. The payment call sends **only the tip**; the server computes the amount from the check, which closes the "amount from the caller" risk in 8. `CloudApi` fails closed without a device credential, so until device registration and auth exist the outbox waits and Tap to Pay stays gated off.
+   - **Not yet wired in the UI:**
+     - the Terminal Location ID, so Tap to Pay can never pass the gate;
+     - paired BT reader discovery, so the selector always sees no reader;
+     - offline QR claim display, which needs an on-device tax port or a cached server total;
+     - order entry from a menu snapshot (menu sync).
+   - **Device key registration and attestation.** Register the Keystore public key with a key-attestation challenge when online. The backend must accept claims only from registered keys and reject a reused nonce.
+   - **Hub gaps:**
+     - The hub's `CourseBoard` is not yet joined to Room. Hub transitions don't write to the outbox, and POS transitions don't reach the board.
+     - `/kds/*` assets arrive in Slice 6.
+     - The POS↔POS `WS /api/v1/peer` with a pinned TLS cert is not built.
+     - The pairing token crosses the LAN in plain HTTP (D6). It rotates when the hub stops. Nothing logs request URLs.
+   - **Small items:**
+     - `transitionCourse` is not idempotent when retried with the same mutationId; the retry fails rather than double-applying.
+     - Missing Room entities: seats, guest checks and allocations, inventory snapshots, offline claims, hub peers.
+10. **Question:** should guest QR ordering in v1 also work offline via the LAN hub (guest phone on restaurant Wi-Fi)? The plan assumes **cloud-only** QR ordering, while QR *pay* is offline-capable via signed claims.
+
+---
+
+## 10. Slice 5b — device auth, sync, connection tokens, check payments (pending approval)
+
+Goal: the backend half of the Android POS, so its outbox drains, Tap to Pay can pass its gate, and a payment's amount is always computed by the server. Offline QR **claim redemption** (D8) moves to Slice 6 with the guest pay page that calls it.
+
+**V5 migration**
+- `device`: replace `ed25519_pubkey` with `public_key_spki bytea` (ECDSA P-256, per §9 item 9). Add `token_hash bytea unique not null` (SHA-256 of the device token), `label`, `enrolled_at`. The table is empty, so nothing needs migrating.
+- New `device_enrollment(code_hash bytea pk, location_id, expires_at, used_at, device_id)`. Codes are single-use, expire after 15 minutes and are stored hashed. Merchant-admin tooling that issues them is out of scope; tests seed them.
+- `location.stripe_terminal_location_id text` (`tml_…`, a platform-account Location), nullable.
+- `processed_client_mutation.reason text`, so a resent conflicted mutation returns the same reason.
+
+**Device enrollment and auth** (a plain servlet filter, no Spring Security)
+- `POST /api/v1/devices/enroll {code, publicKeySpki, label}` is public. It accepts only a P-256 key and returns `{deviceId, locationId, deviceToken}`. The token is 256-bit random, shown once and stored only as a hash. A bad, expired or reused code gets the same 400.
+- `DeviceAuthFilter` guards `/api/v1/devices/me`, `/api/v1/sync/**`, `/api/v1/terminal/**` and `/api/v1/checks/**`. It reads `Authorization: Bearer`, looks up the hash, and rejects revoked devices with 401. The request carries the device's `deviceId` and `locationId`.
+- `GET /api/v1/devices/me` returns `{deviceId, locationId, terminalLocationId}`.
+- The existing Slice 2 order-commit, menu and 86 endpoints stay unauthenticated for now (new risk). Putting them behind the same filter is a one-line change once the KDS and POS send tokens.
+
+**`POST /api/v1/sync/mutations`** (at most 50 per batch, otherwise 400; one DB transaction per mutation)
+- **Dedupe:** a `mutationId` already seen from this device returns DUPLICATE if it was applied, or CONFLICT with its stored reason. A `mutationId` owned by another device returns CONFLICT `MUTATION_ID_TAKEN`.
+- **ORDER_PLACED:**
+  - Its location must be the device's location; otherwise CONFLICT `FORBIDDEN_LOCATION`.
+  - It creates the order (DINE_IN, origin device), seats, courses and lines. Lines are **re-priced from `menu_item`**, so the device's price is ignored. It also creates one guest check covering every line at 1/1.
+  - It then runs the Slice 2 `OrderCommitService.commit`, so inventory is decremented at commit. OVERSOLD or ITEM_86ED gives CONFLICT with that reason, and nothing is written.
+- **COURSE_TRANSITIONED:**
+  - The course must be in the device's location.
+  - The server applies the transition from its own current state. A payload `from` that doesn't match gives CONFLICT `STALE_STATE`.
+  - It writes `course_transition` and updates `course`. Android `FIRED` maps to the DB's `FIRE`; `PREPPING` is reserved for the KDS.
+- An unknown type or a malformed payload gives CONFLICT `INVALID_MUTATION`.
+- **Domain:** Java `CourseStateMachine` and `SplitAllocator`, tested against the same `shared-test-vectors/*.json` as Android.
+
+**`POST /api/v1/terminal/connection_token`**
+- New port method `PaymentGatewayPort.createConnectionToken(String terminalLocationRef)`.
+- The adapter calls Stripe `POST /v1/terminal/connection_tokens` with `location=tml_…`, using the platform key and no `Stripe-Account` header.
+- If the location has no `stripe_terminal_location_id`, the endpoint returns 409.
+
+**`POST /api/v1/checks/{checkId}/payments {idempotencyKey, method, tipCents}`** (closes §9 item 8, "amount from the caller")
+- The check must belong to the device's location; otherwise 404. `tipCents` must be ≥ 0.
+- **Balance**, computed by `CheckBalance`:
+  - start with the lines allocated to this check, each line's amount split across its checks with `SplitAllocator`;
+  - add modifiers and service charges;
+  - add tax from `TaxEngine`, using the location's state rules and the order's channel;
+  - subtract this check's SUCCEEDED payments, and its PENDING ones under other idempotency keys.
+- If the balance is ≤ 0, it returns 409 `NOTHING_DUE`. Otherwise it charges balance + tip through the Slice 4 `PaymentService.start` and returns `{paymentId, clientSecret}`.
+- There is no `amount` field in the request.
+
+**Android wiring**
+- `CloudApi.enroll(code)` sends the Keystore public key, and `CloudApi.me()` fetches the device's details.
+- The device token is stored AES-GCM-encrypted under an Android Keystore key and feeds `CloudApi`'s credential.
+- `terminalLocationId` from `/devices/me` replaces the empty constant, so Tap to Pay can pass the gate once the backend issues tokens.
+- A one-field enrollment screen is shown while the device is unenrolled.
+
+**RED tests first**
+- **Domain:** `CourseStateMachineTest` and `SplitAllocatorTest` against the shared vectors.
+- **Adapter:** a connection-token form test: `location` is sent, there is no `Stripe-Account` header, and the Bearer is the platform key.
+- **`DeviceSyncIT` (enrollment and auth):**
+  - enrollment: a valid code works once; a reused or expired code, or a non-P-256 key, gets 400;
+  - auth: a missing, wrong or revoked token gets 401 on every guarded path;
+  - `/devices/me` returns the right fields.
+- **`DeviceSyncIT` (sync):**
+  - ORDER_PLACED re-prices lines, creates the check and decrements inventory;
+  - a resend gets DUPLICATE and changes nothing;
+  - a foreign location, OVERSOLD, a mutation ID owned by another device, and a stale course state each give CONFLICT with no writes;
+  - a resent conflicted mutation gets the same CONFLICT and reason;
+  - a course FIRE writes the transition row;
+  - a batch of 51 gets 400.
+- **`CheckPaymentIT`:**
+  - the Stripe amount equals subtotal + tax + tip for a CA location, and the client cannot set it;
+  - a second payment on a fully pending check gets 409;
+  - another location's check gets 404, and a negative tip gets 400;
+  - the connection token passes `location`, and a location without a Terminal Location gets 409.
+- **Android:** `CloudApiTest` with Ktor MockEngine: enroll sends the code and SPKI; every call carries the Bearer; there is no call without a credential.
+
+**Not in 5b:**
+- deferred to Slice 6: offline claim redemption and nonce replay checks;
+- key-attestation verification (an Android attestation chain to Google's roots);
+- Bluetooth reader discovery;
+- showing the offline QR code;
+- Room entities for seats and checks;
+- linking the hub's course board to Room.
+
+**Slice 5b result and follow-ups (audit, 2026-11-18).** Fixed test-first in this slice:
+- Concurrent payments on one check are serialised under the check's row lock.
+- A retry after a payment settled returns that payment.
+- The device filter now denies by default, with an explicit public list, and matches on the container's decoded, normalised path.
+
+Still open:
+- **Enrollment rate limit (Medium).** Add a per-IP and per-location throttle at the edge. The admin tool that issues codes must make them at least 128 bits (codes are stored as unsalted SHA-256).
+- **Public Slice 2 endpoints (Medium).** Menu, 86 and order commit are still on the public list until the KDS and POS send tokens.
+- **Revoked devices (Low).** A 401 from `/devices/me` should clear the stored token and show enrollment again. Re-enrolling does not revoke the previous token.
+- **Order caps (Low).** No cap yet on quantity or lines per order; add one at about 999. A negative modifier total that makes a line negative gives a 500 in `CheckBalance`; reject it at commit.
+- **Error-code leaks (Low).** `ORDER_EXISTS` and `MUTATION_ID_TAKEN` reveal that an ID exists elsewhere. IDs are random UUIDs, but these could fold into `INVALID_MUTATION`.
+
+---
+
+## 11. Slice 6 — browser KDS, guest QR ordering and pay, offline claim redemption
+
+Approval: on 2026-11-18 the user asked for all remaining slices to be built without stopping for review. This section is the written plan, treated as approved by that instruction. Slice 6 is the last slice in this plan.
+
+Goal:
+- The kitchen and the guest each get a zero-install browser app.
+- A guest can pay a check from their own phone, online or with a claim signed by an offline POS.
+- The Slice 2 endpoints stop being public.
+
+### 11.1 Decisions
+
+| # | Decision | Why |
+|---|---|---|
+| S6-1 | A browser KDS **enrolls as a device**, as a POS does: an enrollment code plus a WebCrypto P-256 public key. It sends its device token as a Bearer header. | One auth model; no new kind of secret. |
+| S6-2 | KDS live stream: `GET /api/v1/kds/stream?ticket=…&lastEventId=…`.<br>The ticket comes from `POST /api/v1/kds/stream-tickets` (device auth). It is 32 random bytes, stored as SHA-256, **single use**, and expires in 60 s.<br>The client reconnects itself, with a fresh ticket and the last seq it saw. | `EventSource` can't send headers, and the long-lived token must never go in a URL, because URLs get logged. Native auto-reconnect would reuse a spent ticket. |
+| S6-3 | Public `/api/v1/stream` now sends **only the `availability` topic** (86 state). Course and order events go only to the authenticated KDS stream. | Keeps ticket contents (items, tables) off a public stream that covers a whole location. |
+| S6-4 | KDS API (device auth, only for the device's own location):<br>• `GET /api/v1/kds/board` returns fired and ready courses with table, course number, lines, modifiers and station.<br>• `POST /api/v1/courses/{id}/transitions` takes `{action, expectedFrom}` and reuses `DeviceOrderService.transitionCourse`.<br>Every transition, from REST or sync, publishes a `course` event that carries the full ticket. | Reuses the shared state machine and its stale-state check. The board never has to re-fetch. |
+| S6-5 | **Guest QR ordering is cloud-only** (this answers §9 Q10).<br>• `GET /api/v1/t/{qrToken}` returns the table and its QR-visible menu.<br>• `POST /api/v1/t/{qrToken}/orders` places an order priced by the server. The order **stays OPEN with its courses on HOLD, and takes no inventory**, until staff accept it through the existing `POST /orders/{id}/commit` (now device-only).<br>• Caps: qty 1–20 per line and at most 30 lines. Modifier choices must belong to the item's groups and respect min/max. An 86'd item is refused immediately. | A public endpoint must not be able to 86 the kitchen's stock or send prank tickets to the kitchen. Inventory is still taken at commit. |
+| S6-6 | Guest bill and payment:<br>• `GET /api/v1/t/{qrToken}/checks` lists the table's checks with what each owes.<br>• `GET …/checks/{checkId}` is the bill, and the receipt once it is paid.<br>• `POST …/checks/{checkId}/payments` takes `{idempotencyKey, tipCents}` (method QR_CNP). It works only for committed orders and uses **the same locked balance flow as the POS**, extracted into `CheckPaymentService`. The response includes Stripe's **publishable** key. | The server computes every amount. Guests type card details only into Stripe's Payment Element, an iframe from js.stripe.com. |
+| S6-7 | **Offline claim redemption:** `POST /api/v1/claims/payments` takes `{claim, idempotencyKey, tipCents}` and is public. The server checks all of:<br>• the token's shape;<br>• the device exists, is not revoked, and is at the claim's location;<br>• the `SHA256withECDSA` signature over the exact payload bytes, using the key from enrollment;<br>• amounts are consistent;<br>• the currency is the location's;<br>• the claim has not expired, and expires within 2 h 5 min of now.<br>Storage and replay:<br>• One claim is kept per POS check ID. A newer claim for the same check replaces the old one only if nothing on the old one is paid or in flight, and it expires later.<br>• A nonce can be used only once per device.<br>Amount: the claim total, minus what is paid or in flight under other keys, plus the tip, computed under the claim's row lock. | This amends D8: no provisional `guest_check` is created. The POS's check ID never matches the ID the server assigns at sync. |
+| S6-8 | V6 migration:<br>• `payment.check_id` becomes nullable; `payment.claim_check_id` is added; exactly one of the two must be set.<br>• `offline_check_claim` gains `location_id`, `nonce`, `expires_at` and `payload`.<br>• New table `kds_stream_ticket`.<br>Webhook settlement finds the location through either path and marks the claim PAID. | Settlement and the ledger work for both payment kinds. |
+| S6-9 | Lock down Slice 2. Menu GET, 86 PUT and order commit need a device token **for the same location**; another location's device gets 404. Existing tests change only their setup (adding a token), never their assertions. | Closes the Slice 5b Medium finding. |
+| S6-10 | Web app: Vite 6, Preact, TypeScript, tested with Vitest and jsdom. One bundle serves `/kds`, `/t/{qrToken}` and `/c#{claim}`.<br>KDS modes:<br>• **Cloud:** device token plus stream tickets.<br>• **Hub:** opened from `http://<lan-ip>:8787/kds?pair=…`. The pairing token moves to `sessionStorage` and is stripped from the URL.<br>Also:<br>• The bell uses Web Audio and plays only after a "Start shift" tap.<br>• Strict CSP: no inline scripts and no `innerHTML`.<br>• The service worker runs only on the HTTPS cloud origin. | Decisions D6 and D9. |
+| S6-11 | `:web-kds-qr` Gradle project: Exec tasks for `npm ci`, `npm test` and `npm run build`. Its `check` runs the tests and `tsc`.<br>`:android-pos` copies `dist` into a **generated** assets directory through `androidComponents`. | §1. The Android build now needs Node. |
+| S6-12 | The hub serves `/kds` and `/kds/*` from APK assets:<br>• safe paths only (no `..`);<br>• the content type set from the file extension;<br>• `no-store` and the CSP headers;<br>• `index.html` as the fallback. | D6. |
+
+### 11.2 RED tests first
+
+- **`KdsIT`:**
+  - The board shows fired courses with their lines, modifiers, station and table; held courses are hidden.
+  - A REST transition writes a transition row and sends a `course` event to the KDS stream.
+  - A stale `expectedFrom` gets 409; another location's course gets 404.
+  - A ticket works once; reused or expired tickets get 401.
+  - The public stream carries no `course` event.
+  - A request with no token gets 401.
+- **`GuestQrIT`:**
+  - The table menu contains only QR-visible items; an unknown token gets 404.
+  - The server sets the price and ignores any price the client sends.
+  - qty 21, 31 lines, an invalid modifier choice, or an 86'd item each get 422.
+  - Resending the same orderId returns the same order.
+  - The order stays OPEN with inventory unchanged until a device commits it.
+  - The bill shows subtotal, tax and due.
+  - Paying an uncommitted order gets 409.
+  - A QR payment charges due + tip as QR_CNP and returns the publishable key.
+  - Another table's check gets 404.
+- **`OfflineClaimIT`:**
+  - A valid claim charges total + tip.
+  - Each of these gets 400 `INVALID_CLAIM` with no payment row: tampered payload, wrong key, revoked device, wrong location, expired, TTL too long, wrong currency, inconsistent amounts.
+  - Retrying with the same key returns the same payment; a second key gets 409 `NOTHING_DUE`.
+  - A nonce reused on another check gets 409.
+  - A newer claim replaces an unpaid claim but not a paid one.
+  - The webhook settles the payment at the claim's location and marks the claim PAID.
+- **`EndpointLockdownIT`:** 401 with no token; 404 for a device from another location.
+- **Android `HubKdsAssetsTest`:**
+  - Serves index.html, with the right content types.
+  - Traversal attempts are refused.
+  - CSP and no-store headers are set.
+- **Web (Vitest):**
+  - `money`: integers only.
+  - `course`: the shared transition vectors.
+  - `board`: events applied in seq order and reversible.
+  - `kdsStream`: reconnects with a new ticket and `lastEventId`.
+  - `bell`: silent until unlocked.
+  - `claim`: decodes the fragment.
+  - `cart`: modifier limits, totals and caps.
+  - `pairing`: the token is stripped from the URL.
+
+### 11.3 Slice 6 result (2026-11-18)
+
+**Delivered.** Commits b54e6fe (tests) and cd85c44 (implementation). All test suites pass:
+- `:backend:check`;
+- 136 backend integration tests, 30 of them new in this slice;
+- 71 Android unit tests;
+- Android lint, whose only warnings come from the Stripe SDK's own ProGuard file;
+- 62 Vitest tests;
+- `tsc`.
+
+**Deviations from §11.1:**
+- **Nonces (S6-8).** They live in their own table, `offline_claim_nonce(device_id, nonce)`, not as a column on `offline_check_claim`. A replaced claim's nonce then stays used, so it can't be replayed against another check.
+- **Asset paths (S6-10).** Assets use absolute `/assets/…` paths, because relative paths break on `/t/{qr}` deep links. The hub therefore also serves `/assets/*` from the same bundle.
+- **Test changes.**
+  - `DeviceSyncIT.apiPathsArePrivateUnlessListedAsPublic`: one assertion was changed on purpose, in the tests commit, because S6-9 makes the menu private.
+  - `MenuFixture` setup changes: in the tests commit, it sends a device token; in the implementation commit, it handles committing an unknown order.
+- **Guest checks are time-limited.** A table lists, shows and pays only orders opened in the last 12 hours, so a photo of a table's QR code doesn't reveal later diners' bills.
+
+**Not verified:**
+- No real browser or phone has run the web app.
+- The Stripe Payment Element has not been exercised against Stripe test mode.
+- Hosting the bundle on the cloud origin isn't set up. It needs an SPA fallback for `/t/*`, `/c` and `/kds`, and HTTPS for the service worker.
+
+**Audit (2026-11-18): one High and two Medium findings were fixed test-first.** The failing tests are in b6d7d67; the fixes are in the commit after it.
+
+- **High: abandoned or declined payments held a check's balance forever.**
+  - A payment unfinished after 15 minutes is now canceled at Stripe before a new payment is taken.
+  - If Stripe refuses to cancel it, because it may just have succeeded, it keeps holding the balance. That prevents a double charge.
+  - `payment_intent.payment_failed` and `payment_intent.canceled` release the payment immediately.
+  - A `charge.succeeded` that arrives after a decline is still recorded, because the money was taken.
+- **Medium: changing the tip got the guest stuck on `IDEMPOTENCY_KEY_REUSED`.**
+  - The page now reuses a key only for the same tip.
+  - When the tip changes, the page first withdraws its old unconfirmed payment through `POST /payments/cancel`. The payment's idempotency key is the proof. Only QR payments can be withdrawn, never POS card-present ones.
+- **Medium: a paid offline claim was never linked to the synced check.**
+  - `ORDER_PLACED` may now carry the POS's own `checkId`. The server check then uses that ID, and the claim is marked reconciled.
+  - The check and its claim share one balance: payments under either count against both.
+  - Both payment paths take the same per-check advisory lock, so they can't both see the check as unpaid.
+  - A synced check ID must be new, and must not match another location's claim.
+  - **Not done yet:** the Android POS doesn't send `checkId` until offline claims are wired into its UI.
+
+**Results after the fixes:**
+- `:backend:check` passes.
+- 147 integration tests pass.
+- 71 Android unit tests pass.
+- Android lint passes.
+- 66 Vitest tests and `tsc` pass.
+
+**Low findings still open:**
+- **Tips have no upper bound.** An overflowing tip returns a 500.
+- **A claim is marked PAID after any one successful payment, even a partial one.**
+- **Nothing limits how many open guest orders a table can have.** Each one sends an `order` event to the kitchen screens. The fix is rate limiting at the edge.
+- **A revoked KDS keeps its open stream until the stream times out.**
+- **`frame-ancestors` needs a CSP response header from the cloud host.** A meta tag doesn't enforce it.
+- **The hub's pairing token is sent over LAN HTTP** (D6).
+
+### 11.4 Not in Slice 6 (follow-ups)
+
+- **Reconciling a paid claim with the check once the POS syncs.** The POS has to send its check ID in ORDER_PLACED first.
+- **POS UI for accepting guest orders.** The server publishes the events, but nothing on Android reads them yet.
+- **Ticket contents on the hub's course board.** The board has to be joined to Room first.
+- **Rate limits on public endpoints.** These belong at the edge.

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <!-- Card entry lives only in Stripe's iframe from js.stripe.com. No inline script is allowed anywhere. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' https://js.stripe.com; frame-src https://js.stripe.com https://hooks.stripe.com; connect-src 'self' https://api.stripe.com; img-src 'self' data: https://*.stripe.com; style-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'"
+    />
+    <meta name="theme-color" content="#111827" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <title>SquareToast</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

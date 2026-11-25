@@ -617,3 +617,52 @@ Goal:
 - **POS UI for accepting guest orders.** The server publishes the events, but nothing on Android reads them yet.
 - **Ticket contents on the hub's course board.** The board has to be joined to Room first.
 - **Rate limits on public endpoints.** These belong at the edge.
+
+---
+
+## 12. Slice 7 — hardening: close the Slice 6 gaps
+
+Status: **proposed, awaiting approval** (2026-11-25). Branch `slice-7/hardening`, stacked on PR #1.
+
+Goal: finish the double-charge protection end to end, and turn the remaining 500s and open-ended inputs into clear errors. No new product features.
+
+### 12.1 Decisions
+
+| # | Decision | Why |
+|---|---|---|
+| S7-1 | **The Android POS sends its own check ID.**<br>• `OrderEntity` gains `checkId`, a UUID made once when the order is placed (Room v2 migration; the column is nullable for orders placed before it, which have already synced).<br>• `ORDER_PLACED` carries `checkId`.<br>• Every claim drafted for that order uses the same ID. | Closes the §11.3 "not done yet" item. The server then links a paid claim to the synced check, so the guest can't be charged twice. |
+| S7-2 | **Tips have a ceiling.** A tip must be 0 to 1,000,000 cents ($10,000), and due + tip must not overflow. Otherwise the response is 422 `TIP_OUT_OF_RANGE`. One shared check is used by the POS, guest and claim endpoints. | Replaces the 500 caused by `Math.addExact` overflow. $10,000 is far above any real tip and well inside Stripe's limits. |
+| S7-3 | **A claim is PAID only when it is paid in full.** The webhook marks the claim PAID once the succeeded payments under the claim and its check, less their tips, reach the claim's total. A partial payment leaves the claim PENDING. | Fixes the Low finding: today, any one payment marks the claim PAID. |
+| S7-4 | **A table can have at most 10 open guest orders waiting for staff.** The 11th gets 429 `TOO_MANY_PENDING_ORDERS` until staff accept or void one. | A server-side backstop against flooding the kitchen screens. Edge rate limiting is still a follow-up. |
+| S7-5 | **A revoked KDS loses its stream.** Each KDS stream subscription remembers its device. A sweep every 15 s closes the subscriptions of revoked devices. | Revocation today is a database change only, with no endpoint to hook into, so a sweep is the simplest reliable option. Today a revoked KDS keeps its stream until the stream times out. |
+| S7-6 | **Lines can't go negative.** At commit, a line whose price plus modifiers is below 0 gets 422 `INVALID_LINE` instead of a 500 from `CheckBalance`. Quantity is capped at 999 and lines at 200 per order, for POS sync and commit alike. | Slice 5b Low "order caps". |
+| S7-7 | **The Android POS handles a revoked token.** A 401 from `/devices/me` or from sync clears the stored device token and shows enrollment again. Unsynced outbox rows are kept and send after re-enrollment. | Slice 5b Low "revoked devices". |
+
+### 12.2 RED tests first
+
+- **Android `OrderOutboxTest`:**
+  - The `ORDER_PLACED` payload's `checkId` equals the order's stored `checkId`, and it's a valid UUID.
+  - Two orders get different check IDs.
+- **Android claim test:** a claim drafted for an order uses that order's `checkId`.
+- **Android `SyncAuthTest`:**
+  - A 401 clears the token and switches the state to "needs enrollment".
+  - Outbox rows are still there afterwards.
+- **`OfflineClaimIT`:** end to end, a claim is paid, then the order syncs with the same `checkId`. The claim is marked RECONCILED, and the check shows nothing due.
+- **`PaymentLimitsIT`:**
+  - On all three pay endpoints, a tip of 1,000,001 cents or `Long.MAX_VALUE` gets 422 `TIP_OUT_OF_RANGE`, never a 500.
+  - A tip of 1,000,000 is accepted.
+- **`OfflineClaimIT`, partial payment:** after a partial payment settles, the claim stays PENDING. After the payment that covers the rest settles, it's PAID.
+- **`GuestQrIT`:** the 11th pending guest order on a table gets 429. After staff commit one, the next order is accepted.
+- **`KdsIT`:** after a device is revoked, its open KDS stream closes within 20 s.
+- **`AtomicEightySixIT` or `DeviceSyncIT`:**
+  - A negative-total line gets 422 `INVALID_LINE`.
+  - Quantity 1000 gets 422, and so does an order with 201 lines.
+
+### 12.3 Not in Slice 7
+
+- Hosting the web bundle on the cloud origin. That brings the `frame-ancestors` response header and the service worker over HTTPS.
+- Running on a real device and browser against Stripe test mode.
+- Rate limits at the edge, for enrollment and public endpoints.
+- TLS for hub pairing on the LAN (D6 accepted plain HTTP on the LAN).
+- POS screens for accepting guest orders, and for showing an offline claim QR code.
+- Folding `ORDER_EXISTS` and `MUTATION_ID_TAKEN` into `INVALID_MUTATION`.

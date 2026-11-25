@@ -666,3 +666,25 @@ Goal: finish the double-charge protection end to end, and turn the remaining 500
 - TLS for hub pairing on the LAN (D6 accepted plain HTTP on the LAN).
 - POS screens for accepting guest orders, and for showing an offline claim QR code.
 - Folding `ORDER_EXISTS` and `MUTATION_ID_TAKEN` into `INVALID_MUTATION`.
+
+### 12.4 Slice 7 result (2026-11-25)
+
+**Delivered:** tests in 913ec26, fixes in the commit after it. Every suite passes:
+- `:backend:check`, with NullAway and Error Prone clean.
+- 155 backend integration tests, 8 of them new.
+- 77 Android unit tests, 6 of them new.
+- Android lint.
+
+The web app didn't change.
+
+**Changes from §12.1 and §12.2:**
+- **Where the tests live.** The tip-limit tests are in `OfflineClaimIT` (POS and claim) and `GuestQrIT` (guest), not a new `PaymentLimitsIT`. Those classes already have each endpoint's setup.
+- **No claim-drafting test.** POS screens for drafting claims don't exist yet (§12.3). Instead, `OrderRepository.checkIdOf(orderId)` returns the ID a claim must be signed with, and the outbox test checks it.
+- **Migration test.** `AppDatabaseMigrationTest` builds the v1 database straight from the exported `1.json` schema, then opens it with the v2 code and `MIGRATIONS`. To read that schema, the test sources now include `schemas/`.
+- **Revoked tokens.** `DeviceSession` holds the enrolled state, and `CloudApi` calls it on any 401 to an authenticated call. The 401 stays retryable, so outbox rows stay PENDING.
+- **Claims scanned after the POS synced the check.** This came up while making the partial-payment test pass: such a claim is now stored with `reconciled_at` already set. Without it, a fully paid claim on a check the POS had already synced stayed PAID and never became RECONCILED.
+- **Order commit checks limits first.** Line limits and a below-zero line price are checked before menu and modifier validation, so an oversized or negative order always fails with `INVALID_LINE`.
+- **How the KDS sweep works.** It runs every `squaretoast.kds.revocation-sweep` (default 15 s) on one virtual thread. It relies on Spring 7's `ResponseBodyEmitter` supporting several completion callbacks; checked in 7.0.1.
+- **Already passing.** `aPaidClaimIsReconciledWhenThePosSyncsTheSameCheck` passed before any fix. It stays as a regression test.
+
+**Not verified:** the Android migration on a real device; the revoked-token flow on a real device.

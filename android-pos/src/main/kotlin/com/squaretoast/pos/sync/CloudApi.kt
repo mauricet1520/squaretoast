@@ -53,7 +53,12 @@ class CloudApi(
     private val baseUrl: String,
     engine: HttpClient,
     private val deviceCredential: () -> String?,
+    /** Called when the cloud answers 401 to the token we sent: the device was revoked or its token replaced. */
+    private val onRejectedCredential: () -> Unit,
 ) : SyncApi {
+
+    constructor(baseUrl: String, engine: HttpClient, deviceCredential: () -> String?) :
+        this(baseUrl, engine, deviceCredential, {})
 
     init { require(baseUrl.startsWith("https://")) { "the cloud API is https only" } }
 
@@ -84,8 +89,11 @@ class CloudApi(
     /** Fail closed: never call the cloud unauthenticated. 401 is retryable, so the outbox waits for a credential. */
     private fun HttpRequestBuilder.authenticate() = bearerAuth(deviceCredential() ?: throw RejectedBatchException(401))
 
-    private fun io.ktor.client.statement.HttpResponse.checked() =
-        also { if (!status.isSuccess()) throw RejectedBatchException(status.value) }
+    /** Only for authenticated calls: a 401 here means the token we sent is no longer accepted. */
+    private fun io.ktor.client.statement.HttpResponse.checked() = also {
+        if (status.value == 401) onRejectedCredential()
+        if (!status.isSuccess()) throw RejectedBatchException(status.value)
+    }
 
     private suspend inline fun <reified T> post(path: String, body: T) = http.post(baseUrl + path) {
         authenticate()

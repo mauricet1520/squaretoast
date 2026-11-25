@@ -6,6 +6,8 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.squaretoast.pos.domain.CourseState
 import kotlinx.coroutines.flow.Flow
 
@@ -41,10 +43,21 @@ interface OutboxDao {
 
 @Database(
     entities = [OrderEntity::class, CourseEntity::class, OrderLineEntity::class, OutboxEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun orderDao(): OrderDao
     abstract fun outboxDao(): OutboxDao
+
+    companion object {
+        /** v2: orders carry the check ID the POS sends with ORDER_PLACED (plan S7-1). */
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("alter table orders add column checkId TEXT")
+            }
+        }
+
+        val MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2)
+    }
 }

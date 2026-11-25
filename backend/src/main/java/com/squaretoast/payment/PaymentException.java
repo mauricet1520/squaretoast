@@ -43,6 +43,24 @@ public abstract sealed class PaymentException extends RuntimeException {
         }
     }
 
+    /** A tip is 0 to {@link #MAX_TIP_CENTS}; far above any real tip, and it keeps due + tip from overflowing. */
+    public static final class TipOutOfRange extends PaymentException {
+        private static final long serialVersionUID = 1L;
+
+        public static final long MAX_TIP_CENTS = 1_000_000L; // $10,000
+
+        TipOutOfRange() {
+            super("tip out of range");
+        }
+
+        static long check(long tipCents) {
+            if (tipCents < 0 || tipCents > MAX_TIP_CENTS) {
+                throw new TipOutOfRange();
+            }
+            return tipCents;
+        }
+    }
+
     /** The idempotency key already belongs to a different charge. */
     public static final class IdempotencyConflict extends PaymentException {
         private static final long serialVersionUID = 1L;

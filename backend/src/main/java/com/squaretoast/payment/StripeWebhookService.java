@@ -124,10 +124,16 @@ public class StripeWebhookService {
         // A succeeded charge is money taken: record it even if the intent was marked failed after an earlier decline.
         db.sql("update payment set status = 'SUCCEEDED' where id = ? and status in ('PENDING', 'REQUIRES_ACTION', 'FAILED', 'CANCELED')")
                 .params(p.id()).update();
-        // An offline claim is paid once its payment succeeds; reconciling it with the synced check comes later.
+        // An offline claim is paid once what has settled under it and its synced check, tips aside, covers its
+        // total. If the POS has already synced that check, the claim is reconciled at the same time.
         db.sql("""
-                update offline_check_claim set status = 'PAID'
-                where status = 'PENDING' and check_id = (select claim_check_id from payment where id = ?)""")
+                update offline_check_claim c
+                set status = case when c.reconciled_at is not null then 'RECONCILED' else 'PAID' end
+                where c.status = 'PENDING'
+                  and c.check_id = (select coalesce(claim_check_id, check_id) from payment where id = ?)
+                  and (select coalesce(sum(s.amount_cents - s.tip_cents), 0) from payment s
+                       where s.status = 'SUCCEEDED' and (s.claim_check_id = c.check_id or s.check_id = c.check_id))
+                      >= c.amount_cents""")
                 .params(p.id()).update();
 
         String balanceTxn = text(charge.path("balance_transaction"));

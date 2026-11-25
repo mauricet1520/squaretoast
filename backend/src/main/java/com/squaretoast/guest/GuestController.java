@@ -169,6 +169,16 @@ class GuestController {
     }
 
     @ExceptionHandler
+    ResponseEntity<Problem> tooMany(GuestOrders.TooManyWaiting e) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(new Problem("TOO_MANY_PENDING_ORDERS"));
+    }
+
+    @ExceptionHandler
+    ResponseEntity<Problem> tip(PaymentException.TipOutOfRange e) {
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_CONTENT).body(new Problem("TIP_OUT_OF_RANGE"));
+    }
+
+    @ExceptionHandler
     ResponseEntity<Problem> nothingDue(PaymentException.NothingDue e) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(new Problem("NOTHING_DUE"));
     }

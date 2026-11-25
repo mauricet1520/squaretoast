@@ -59,6 +59,11 @@ class DevicePaymentController {
     }
 
     @ExceptionHandler
+    ResponseEntity<Problem> tip(PaymentException.TipOutOfRange e) {
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_CONTENT).body(new Problem("TIP_OUT_OF_RANGE"));
+    }
+
+    @ExceptionHandler
     ResponseEntity<Problem> nothingDue(PaymentException.NothingDue e) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(new Problem("NOTHING_DUE"));
     }

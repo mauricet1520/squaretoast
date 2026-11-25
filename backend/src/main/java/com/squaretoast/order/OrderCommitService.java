@@ -90,6 +90,14 @@ public class OrderCommitService {
                 .param(orderId)
                 .query((rs, n) -> new Line(rs.getObject("id", UUID.class), rs.getObject("menu_item_id", UUID.class), rs.getInt("qty")))
                 .list();
+        // Structural limits first (plan S7-6): a line priced below zero would break the check's balance.
+        boolean negative = jdbc.sql("""
+                select exists (select 1 from order_line l where l.order_id = ? and l.unit_price_cents
+                    + coalesce((select sum(m.price_delta_cents) from order_line_modifier m where m.order_line_id = l.id), 0) < 0)""")
+                .param(orderId).query(Boolean.class).single();
+        if (lines.size() > OrderLimits.MAX_LINES || negative || lines.stream().anyMatch(l -> l.qty() > OrderLimits.MAX_QTY)) {
+            throw new CommitException.Rejected("INVALID_LINE", null);
+        }
         Map<UUID, List<UUID>> chosen = new HashMap<>();
         jdbc.sql("""
                 select m.order_line_id, m.modifier_option_id

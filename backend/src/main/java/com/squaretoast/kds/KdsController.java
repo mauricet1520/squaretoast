@@ -55,11 +55,13 @@ class KdsController {
     private final DeviceOrderService orders;
     private final RealtimeStreams streams;
     private final StreamTickets streamTickets;
+    private final KdsStreamRevocation revocation;
     private final JdbcClient db;
     private final TransactionTemplate tx;
 
     KdsController(KdsTickets tickets, DeviceOrderService orders, RealtimeStreams streams, StreamTickets streamTickets,
-                  JdbcClient db, PlatformTransactionManager txm) {
+                  JdbcClient db, PlatformTransactionManager txm, KdsStreamRevocation revocation) {
+        this.revocation = revocation;
         this.tickets = tickets;
         this.orders = orders;
         this.streams = streams;
@@ -107,12 +109,14 @@ class KdsController {
     ResponseEntity<SseEmitter> stream(@RequestParam(required = false) @Nullable String ticket,
                                       @RequestParam(required = false) @Nullable Long lastEventId,
                                       @RequestHeader(name = "Last-Event-ID", required = false) @Nullable Long header) {
-        Optional<UUID> location = ticket == null ? Optional.empty() : streamTickets.redeem(ticket);
-        if (location.isEmpty()) {
+        Optional<StreamTickets.Redeemed> redeemed = ticket == null ? Optional.empty() : streamTickets.redeem(ticket);
+        if (redeemed.isEmpty()) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
         Long from = lastEventId != null ? lastEventId : header;
-        return ResponseEntity.ok(streams.subscribe(location.get(), from, topic -> true));
+        SseEmitter emitter = streams.subscribe(redeemed.get().location(), from, topic -> true);
+        revocation.track(redeemed.get().device(), emitter);
+        return ResponseEntity.ok(emitter);
     }
 
     private static <E extends Enum<E>> E parse(Class<E> type, @Nullable String value) {

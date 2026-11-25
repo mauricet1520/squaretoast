@@ -48,6 +48,9 @@ public class DeviceOrderService {
         if (lines.isEmpty()) {
             throw new OrderRejected("INVALID_MUTATION");
         }
+        if (lines.size() > OrderLimits.MAX_LINES || lines.stream().anyMatch(l -> l.quantity() > OrderLimits.MAX_QTY)) {
+            throw new OrderRejected("INVALID_LINE");
+        }
         Map<Integer, UUID> courses = new LinkedHashMap<>();
         TreeSet<Integer> seats = new TreeSet<>();
         for (PlacedLine l : lines) {

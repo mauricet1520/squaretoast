@@ -40,8 +40,10 @@ class StreamTickets {
         return ticket;
     }
 
-    /** The ticket's location, marking the ticket used; empty if it is malformed, unknown, used, expired or revoked. */
-    Optional<UUID> redeem(String ticket) {
+    record Redeemed(UUID device, UUID location) {}
+
+    /** The ticket's device and location, marking the ticket used; empty if malformed, unknown, used, expired or revoked. */
+    Optional<Redeemed> redeem(String ticket) {
         if (!SHAPE.matcher(ticket).matches()) {
             return Optional.empty();
         }
@@ -50,8 +52,10 @@ class StreamTickets {
                 from device d
                 where t.ticket_hash = ? and t.used_at is null and t.expires_at > now()
                   and d.id = t.device_id and d.revoked_at is null and d.location_id = t.location_id
-                returning t.location_id""")
-                .params(sha256(ticket)).query(UUID.class).optional();
+                returning t.device_id, t.location_id""")
+                .params(sha256(ticket))
+                .query((rs, n) -> new Redeemed(rs.getObject("device_id", UUID.class), rs.getObject("location_id", UUID.class)))
+                .optional();
     }
 
     private static byte[] sha256(String s) {

@@ -33,6 +33,7 @@ private data class OrderPlacedPayload(
     val locationId: String,
     val tableLabel: String,
     val lines: List<LinePayload>,
+    val checkId: String,
 )
 
 @Serializable
@@ -66,17 +67,21 @@ class OrderRepository(private val db: AppDatabase, private val clock: Clock) {
             OrderLineEntity(UUID.randomUUID().toString(), orderId, courseIds.getValue(l.course), l.seat, l.menuItemId,
                 l.name, l.quantity, l.unitPriceCents)
         }
+        val checkId = UUID.randomUUID().toString()
         val payload = OrderPlacedPayload(orderId, cmd.locationId.toString(), cmd.tableLabel, cmd.lines.zip(lines) { n, l ->
             LinePayload(l.id, l.courseId, n.course, l.seat, l.menuItemId, l.quantity, l.unitPriceCents)
-        })
+        }, checkId)
 
         db.withTransaction {
-            db.orderDao().insertOrder(OrderEntity(orderId, cmd.locationId.toString(), cmd.tableLabel, clock.millis()))
+            db.orderDao().insertOrder(OrderEntity(orderId, cmd.locationId.toString(), cmd.tableLabel, clock.millis(), checkId))
             db.orderDao().insertCourses(courseIds.map { (n, id) -> CourseEntity(id, orderId, n, CourseState.HOLD) })
             db.orderDao().insertLines(lines)
             enqueue(cmd.mutationId, orderId, "ORDER_PLACED", Json.encodeToString(payload))
         }
     }
+
+    /** The check ID to sign an offline claim with, so the claim and the synced check are the same check. */
+    suspend fun checkIdOf(orderId: String): String? = db.orderDao().order(orderId)?.checkId
 
     suspend fun transitionCourse(mutationId: UUID, courseId: String, action: CourseAction): CourseState =
         db.withTransaction {

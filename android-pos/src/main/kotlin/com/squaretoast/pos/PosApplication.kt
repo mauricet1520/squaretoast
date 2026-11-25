@@ -8,6 +8,7 @@ import com.squaretoast.pos.data.OrderRepository
 import com.squaretoast.pos.log.ScrubbingTree
 import com.squaretoast.pos.sync.CloudApi
 import com.squaretoast.pos.sync.DeviceCredentialStore
+import com.squaretoast.pos.sync.DeviceSession
 import com.squaretoast.pos.sync.OutboxDrainer
 import com.squaretoast.pos.terminal.TerminalSession
 import com.squaretoast.pos.terminal.TerminalTokenProvider
@@ -41,7 +42,7 @@ class PosApplication : Application() {
 object AppModule {
     @Provides @Singleton
     fun database(@ApplicationContext context: Context): AppDatabase =
-        Room.databaseBuilder(context, AppDatabase::class.java, "pos.db").build()
+        Room.databaseBuilder(context, AppDatabase::class.java, "pos.db").addMigrations(*AppDatabase.MIGRATIONS).build()
 
     @Provides @Singleton
     fun orders(db: AppDatabase): OrderRepository = OrderRepository(db, Clock.systemUTC())
@@ -50,8 +51,11 @@ object AppModule {
     fun credentials(@ApplicationContext context: Context): DeviceCredentialStore = DeviceCredentialStore(context)
 
     @Provides @Singleton
-    fun cloud(credentials: DeviceCredentialStore): CloudApi =
-        CloudApi(BuildConfig.CLOUD_BASE_URL, HttpClient(OkHttp), credentials::token)
+    fun session(credentials: DeviceCredentialStore): DeviceSession = DeviceSession(credentials::token, credentials::clear)
+
+    @Provides @Singleton
+    fun cloud(session: DeviceSession): CloudApi =
+        CloudApi(BuildConfig.CLOUD_BASE_URL, HttpClient(OkHttp), session::token, onRejectedCredential = session::rejected)
 
     @Provides
     fun drainer(db: AppDatabase, cloud: CloudApi): OutboxDrainer = OutboxDrainer(db, cloud)

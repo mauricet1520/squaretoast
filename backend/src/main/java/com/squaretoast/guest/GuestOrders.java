@@ -49,6 +49,18 @@ class GuestOrders {
         }
     }
 
+    /** Orders a table may have waiting for staff; a backstop against flooding the kitchen screens (plan S7-4). */
+    static final int MAX_WAITING_ORDERS = 10;
+
+    /** The table already has {@link #MAX_WAITING_ORDERS} orders staff have not accepted. */
+    static final class TooManyWaiting extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        TooManyWaiting() {
+            super("TOO_MANY_PENDING_ORDERS", null, false, false);
+        }
+    }
+
     private record Item(UUID id, long priceCents, String taxCategory, String temp, String name, int course) {}
 
     private record Option(UUID id, String name, long deltaCents, UUID group) {}
@@ -84,6 +96,15 @@ class GuestOrders {
             return again.get();
         }
         List<Priced> lines = price(table.location(), request);
+        // Serialise new orders per table, so concurrent requests can't slip past the cap together.
+        db.sql("select id from dining_table where id = ? for update").params(table.id()).query(UUID.class).single();
+        long waiting = db.sql("""
+                select count(*) from orders
+                where table_id = ? and status = 'OPEN' and opened_at > now() - interval '12 hours'""")
+                .params(table.id()).query(Long.class).single();
+        if (waiting >= MAX_WAITING_ORDERS) {
+            throw new TooManyWaiting();
+        }
         int inserted = db.sql("""
                 insert into orders(id, location_id, table_id, fulfillment_channel) values (?, ?, ?, 'DINE_IN')
                 on conflict (id) do nothing""")

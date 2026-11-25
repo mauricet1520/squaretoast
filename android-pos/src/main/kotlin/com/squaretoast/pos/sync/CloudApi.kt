@@ -8,7 +8,9 @@ import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.request
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
@@ -53,12 +55,12 @@ class CloudApi(
     private val baseUrl: String,
     engine: HttpClient,
     private val deviceCredential: () -> String?,
-    /** Called when the cloud answers 401 to the token we sent: the device was revoked or its token replaced. */
-    private val onRejectedCredential: () -> Unit,
+    /** Called with the token we sent when the cloud answers 401 to it: the device was revoked or re-enrolled. */
+    private val onRejectedCredential: (String) -> Unit,
 ) : SyncApi {
 
     constructor(baseUrl: String, engine: HttpClient, deviceCredential: () -> String?) :
-        this(baseUrl, engine, deviceCredential, {})
+        this(baseUrl, engine, deviceCredential, { _ -> })
 
     init { require(baseUrl.startsWith("https://")) { "the cloud API is https only" } }
 
@@ -89,9 +91,11 @@ class CloudApi(
     /** Fail closed: never call the cloud unauthenticated. 401 is retryable, so the outbox waits for a credential. */
     private fun HttpRequestBuilder.authenticate() = bearerAuth(deviceCredential() ?: throw RejectedBatchException(401))
 
-    /** Only for authenticated calls: a 401 here means the token we sent is no longer accepted. */
+    /** Only for authenticated calls: a 401 here means the token this request sent is no longer accepted. */
     private fun io.ktor.client.statement.HttpResponse.checked() = also {
-        if (status.value == 401) onRejectedCredential()
+        if (status.value == 401) {
+            request.headers[HttpHeaders.Authorization]?.removePrefix("Bearer ")?.let(onRejectedCredential)
+        }
         if (!status.isSuccess()) throw RejectedBatchException(status.value)
     }
 

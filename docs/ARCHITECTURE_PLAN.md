@@ -688,3 +688,21 @@ The web app didn't change.
 - **Already passing.** `aPaidClaimIsReconciledWhenThePosSyncsTheSameCheck` passed before any fix. It stays as a regression test.
 
 **Not verified:** the Android migration on a real device; the revoked-token flow on a real device.
+
+**Audit (2026-11-25): no High findings.** No test assertion changed after the tests commit. A manual security review of the payment and auth diff found no High or Medium security issues.
+
+Fixed:
+- **Medium: a 401 that arrives late could log out a freshly re-enrolled POS.** It cleared whatever token was stored. Fixed test-first: the failing test is edf0108, the fix the commit after it. `CloudApi` now passes the rejected token to `DeviceSession.rejected(sent)`, which clears it only if it's still the stored token.
+- **Low: a claim stored at the same moment the check syncs could miss reconciliation.** Each transaction could miss the other's row. Placing the order now takes the same per-check advisory lock as claim payments. No test covers it, because the timing can't be reproduced reliably.
+
+Still open (Low):
+- **A guest order resent while the table is full can get 429 instead of its existing order.** This happens only when two copies race; the next resend succeeds.
+- **One device's KDS stream can stay in the revocation list.** It happens if the stream ends before tracking registers, and the entry stays until that device is revoked. The sweep makes one query per open device, and a revoked stream stays open while the DB is down.
+- **Someone holding a table's QR code can fill that table's 10 waiting slots.** No endpoint exists to void guest orders, so the slots free up only when staff accept the orders or after 12 h. Staff can still ring up the table on the POS.
+- **A claim that reuses another location's check ID would count that check's payments.** It needs a signed claim from an enrolled device. This predates Slice 7.
+
+**Final results:**
+- `:backend:check` passes.
+- 155 backend integration tests pass.
+- 78 Android unit tests pass.
+- Android lint passes.

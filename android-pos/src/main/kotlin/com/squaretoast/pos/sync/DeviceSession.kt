@@ -17,13 +17,21 @@ class DeviceSession(private val token: () -> String?, private val clear: () -> U
     fun token(): String? = token.invoke()
 
     /** A new token was stored. */
+    @Synchronized
     fun saved() {
         state.value = token() != null
     }
 
     /** The cloud answered 401 to the stored token. */
+    @Synchronized
     fun rejected() {
         clear()
         state.value = false
+    }
+
+    /** The cloud answered 401 to [sent]; forget it only if it is still the stored token, not a newer enrollment's. */
+    @Synchronized
+    fun rejected(sent: String) {
+        if (token() == sent) rejected()
     }
 }

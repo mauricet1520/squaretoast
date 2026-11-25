@@ -91,6 +91,9 @@ public class DeviceOrderService {
                 throw new OrderRejected("INVALID_MUTATION");
             }
         }
+        // Same per-check lock as claim payments, so a claim stored concurrently is either seen here or sees this check.
+        db.sql("select pg_advisory_xact_lock(hashtextextended(cast(? as text), 1))").params("payment:" + check)
+                .query((rs, n) -> n).list(); // the key PaymentService.lockTarget uses
         db.sql("insert into guest_check(id, order_id, label) values (?, ?, 'Check 1')").params(check, orderId).update();
         db.sql("""
                 update offline_check_claim set reconciled_at = now(),

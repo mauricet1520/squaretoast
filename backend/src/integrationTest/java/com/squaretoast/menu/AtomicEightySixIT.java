@@ -279,6 +279,26 @@ class AtomicEightySixIT {
         assertThat(f.commit(UUID.randomUUID()).statusCode()).isEqualTo(404);
     }
 
+    @Test
+    void aNegativeOrOversizedLineIsRefusedAtCommitNotAServerError() {
+        UUID discount = f.option(addOns, "Staff discount", -2000); // takes a $6 slider below zero
+        UUID negative = f.order(loc, slider, 1, discount);
+        UUID tooMany = f.order(loc, salad, 1000);
+        UUID tooLong = f.openOrder(loc);
+        for (int i = 0; i < 201; i++) {
+            f.addLine(tooLong, salad, 1);
+        }
+
+        for (UUID order : List.of(negative, tooMany, tooLong)) {
+            HttpResponse<String> r = f.commit(order);
+            assertThat(r.statusCode()).as(r.body()).isEqualTo(422);
+            assertThat(body(r).get("error").asString()).isEqualTo("INVALID_LINE");
+            assertThat(f.status(order)).isEqualTo("OPEN");
+        }
+        assertThat(f.onHand(bun)).isEqualTo(10);
+        assertThat(f.commit(f.order(loc, salad, 999)).statusCode()).isEqualTo(200);
+    }
+
     private void assertInvalid(UUID order, String reason) {
         HttpResponse<String> r = f.commit(order);
         assertThat(r.statusCode()).as(r.body()).isEqualTo(422);

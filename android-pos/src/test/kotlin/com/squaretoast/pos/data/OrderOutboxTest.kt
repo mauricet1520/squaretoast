@@ -80,6 +80,21 @@ class OrderOutboxTest {
     }
 
     @Test
+    fun eachOrderGetsItsOwnCheckIdAndSendsItWithTheOrder() = runBlocking {
+        val first = order()
+        val second = order()
+        repo.placeOrder(first)
+        repo.placeOrder(second)
+
+        val checkId = db.orderDao().order(first.orderId.toString())!!.checkId!!
+        assertEquals(checkId, UUID.fromString(checkId).toString())
+        assertEquals(checkId, repo.checkIdOf(first.orderId.toString()))
+        val payload = Json.parseToJsonElement(db.outboxDao().all().first().payloadJson).jsonObject
+        assertEquals(checkId, payload["checkId"]!!.jsonPrimitive.content)
+        assertTrue(checkId != db.orderDao().order(second.orderId.toString())!!.checkId)
+    }
+
+    @Test
     fun aFailedOutboxWriteRollsBackTheWholeOrder() = runBlocking {
         val mutationId = UUID.randomUUID()
         repo.placeOrder(order(mutationId = mutationId))

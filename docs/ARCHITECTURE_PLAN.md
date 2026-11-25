@@ -617,3 +617,92 @@ Goal:
 - **POS UI for accepting guest orders.** The server publishes the events, but nothing on Android reads them yet.
 - **Ticket contents on the hub's course board.** The board has to be joined to Room first.
 - **Rate limits on public endpoints.** These belong at the edge.
+
+---
+
+## 12. Slice 7 — hardening: close the Slice 6 gaps
+
+Status: **proposed, awaiting approval** (2026-11-25). Branch `slice-7/hardening`, stacked on PR #1.
+
+Goal: finish the double-charge protection end to end, and turn the remaining 500s and open-ended inputs into clear errors. No new product features.
+
+### 12.1 Decisions
+
+| # | Decision | Why |
+|---|---|---|
+| S7-1 | **The Android POS sends its own check ID.**<br>• `OrderEntity` gains `checkId`, a UUID made once when the order is placed (Room v2 migration; the column is nullable for orders placed before it, which have already synced).<br>• `ORDER_PLACED` carries `checkId`.<br>• Every claim drafted for that order uses the same ID. | Closes the §11.3 "not done yet" item. The server then links a paid claim to the synced check, so the guest can't be charged twice. |
+| S7-2 | **Tips have a ceiling.** A tip must be 0 to 1,000,000 cents ($10,000), and due + tip must not overflow. Otherwise the response is 422 `TIP_OUT_OF_RANGE`. One shared check is used by the POS, guest and claim endpoints. | Replaces the 500 caused by `Math.addExact` overflow. $10,000 is far above any real tip and well inside Stripe's limits. |
+| S7-3 | **A claim is PAID only when it is paid in full.** The webhook marks the claim PAID once the succeeded payments under the claim and its check, less their tips, reach the claim's total. A partial payment leaves the claim PENDING. | Fixes the Low finding: today, any one payment marks the claim PAID. |
+| S7-4 | **A table can have at most 10 open guest orders waiting for staff.** The 11th gets 429 `TOO_MANY_PENDING_ORDERS` until staff accept or void one. | A server-side backstop against flooding the kitchen screens. Edge rate limiting is still a follow-up. |
+| S7-5 | **A revoked KDS loses its stream.** Each KDS stream subscription remembers its device. A sweep every 15 s closes the subscriptions of revoked devices. | Revocation today is a database change only, with no endpoint to hook into, so a sweep is the simplest reliable option. Today a revoked KDS keeps its stream until the stream times out. |
+| S7-6 | **Lines can't go negative.** At commit, a line whose price plus modifiers is below 0 gets 422 `INVALID_LINE` instead of a 500 from `CheckBalance`. Quantity is capped at 999 and lines at 200 per order, for POS sync and commit alike. | Slice 5b Low "order caps". |
+| S7-7 | **The Android POS handles a revoked token.** A 401 from `/devices/me` or from sync clears the stored device token and shows enrollment again. Unsynced outbox rows are kept and send after re-enrollment. | Slice 5b Low "revoked devices". |
+
+### 12.2 RED tests first
+
+- **Android `OrderOutboxTest`:**
+  - The `ORDER_PLACED` payload's `checkId` equals the order's stored `checkId`, and it's a valid UUID.
+  - Two orders get different check IDs.
+- **Android claim test:** a claim drafted for an order uses that order's `checkId`.
+- **Android `SyncAuthTest`:**
+  - A 401 clears the token and switches the state to "needs enrollment".
+  - Outbox rows are still there afterwards.
+- **`OfflineClaimIT`:** end to end, a claim is paid, then the order syncs with the same `checkId`. The claim is marked RECONCILED, and the check shows nothing due.
+- **`PaymentLimitsIT`:**
+  - On all three pay endpoints, a tip of 1,000,001 cents or `Long.MAX_VALUE` gets 422 `TIP_OUT_OF_RANGE`, never a 500.
+  - A tip of 1,000,000 is accepted.
+- **`OfflineClaimIT`, partial payment:** after a partial payment settles, the claim stays PENDING. After the payment that covers the rest settles, it's PAID.
+- **`GuestQrIT`:** the 11th pending guest order on a table gets 429. After staff commit one, the next order is accepted.
+- **`KdsIT`:** after a device is revoked, its open KDS stream closes within 20 s.
+- **`AtomicEightySixIT` or `DeviceSyncIT`:**
+  - A negative-total line gets 422 `INVALID_LINE`.
+  - Quantity 1000 gets 422, and so does an order with 201 lines.
+
+### 12.3 Not in Slice 7
+
+- Hosting the web bundle on the cloud origin. That brings the `frame-ancestors` response header and the service worker over HTTPS.
+- Running on a real device and browser against Stripe test mode.
+- Rate limits at the edge, for enrollment and public endpoints.
+- TLS for hub pairing on the LAN (D6 accepted plain HTTP on the LAN).
+- POS screens for accepting guest orders, and for showing an offline claim QR code.
+- Folding `ORDER_EXISTS` and `MUTATION_ID_TAKEN` into `INVALID_MUTATION`.
+
+### 12.4 Slice 7 result (2026-11-25)
+
+**Delivered:** tests in 913ec26, fixes in the commit after it. Every suite passes:
+- `:backend:check`, with NullAway and Error Prone clean.
+- 155 backend integration tests, 8 of them new.
+- 77 Android unit tests, 6 of them new.
+- Android lint.
+
+The web app didn't change.
+
+**Changes from §12.1 and §12.2:**
+- **Where the tests live.** The tip-limit tests are in `OfflineClaimIT` (POS and claim) and `GuestQrIT` (guest), not a new `PaymentLimitsIT`. Those classes already have each endpoint's setup.
+- **No claim-drafting test.** POS screens for drafting claims don't exist yet (§12.3). Instead, `OrderRepository.checkIdOf(orderId)` returns the ID a claim must be signed with, and the outbox test checks it.
+- **Migration test.** `AppDatabaseMigrationTest` builds the v1 database straight from the exported `1.json` schema, then opens it with the v2 code and `MIGRATIONS`. To read that schema, the test sources now include `schemas/`.
+- **Revoked tokens.** `DeviceSession` holds the enrolled state, and `CloudApi` calls it on any 401 to an authenticated call. The 401 stays retryable, so outbox rows stay PENDING.
+- **Claims scanned after the POS synced the check.** This came up while making the partial-payment test pass: such a claim is now stored with `reconciled_at` already set. Without it, a fully paid claim on a check the POS had already synced stayed PAID and never became RECONCILED.
+- **Order commit checks limits first.** Line limits and a below-zero line price are checked before menu and modifier validation, so an oversized or negative order always fails with `INVALID_LINE`.
+- **How the KDS sweep works.** It runs every `squaretoast.kds.revocation-sweep` (default 15 s) on one virtual thread. It relies on Spring 7's `ResponseBodyEmitter` supporting several completion callbacks; checked in 7.0.1.
+- **Already passing.** `aPaidClaimIsReconciledWhenThePosSyncsTheSameCheck` passed before any fix. It stays as a regression test.
+
+**Not verified:** the Android migration on a real device; the revoked-token flow on a real device.
+
+**Audit (2026-11-25): no High findings.** No test assertion changed after the tests commit. A manual security review of the payment and auth diff found no High or Medium security issues.
+
+Fixed:
+- **Medium: a 401 that arrives late could log out a freshly re-enrolled POS.** It cleared whatever token was stored. Fixed test-first: the failing test is edf0108, the fix the commit after it. `CloudApi` now passes the rejected token to `DeviceSession.rejected(sent)`, which clears it only if it's still the stored token.
+- **Low: a claim stored at the same moment the check syncs could miss reconciliation.** Each transaction could miss the other's row. Placing the order now takes the same per-check advisory lock as claim payments. No test covers it, because the timing can't be reproduced reliably.
+
+Still open (Low):
+- **A guest order resent while the table is full can get 429 instead of its existing order.** This happens only when two copies race; the next resend succeeds.
+- **One device's KDS stream can stay in the revocation list.** It happens if the stream ends before tracking registers, and the entry stays until that device is revoked. The sweep makes one query per open device, and a revoked stream stays open while the DB is down.
+- **Someone holding a table's QR code can fill that table's 10 waiting slots.** No endpoint exists to void guest orders, so the slots free up only when staff accept the orders or after 12 h. Staff can still ring up the table on the POS.
+- **A claim that reuses another location's check ID would count that check's payments.** It needs a signed claim from an enrolled device. This predates Slice 7.
+
+**Final results:**
+- `:backend:check` passes.
+- 155 backend integration tests pass.
+- 78 Android unit tests pass.
+- Android lint passes.

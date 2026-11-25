@@ -1,0 +1,55 @@
+package com.squaretoast.pos.data
+
+import android.app.Application
+import android.database.sqlite.SQLiteDatabase
+import androidx.room.Room
+import androidx.test.core.app.ApplicationProvider
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+
+/** Builds a version-1 database from its exported schema, then opens it with the current code and migrations. */
+@RunWith(RobolectricTestRunner::class)
+@Config(application = Application::class)
+class AppDatabaseMigrationTest {
+
+    @Test
+    fun aVersionOneDatabaseKeepsItsOrdersAfterMigrating() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val file = context.getDatabasePath("migrate.db").apply { parentFile?.mkdirs(); delete() }
+        val schema = Json.parseToJsonElement(
+            checkNotNull(javaClass.classLoader?.getResource("com.squaretoast.pos.data.AppDatabase/1.json")).readText(),
+        ).jsonObject["database"]!!.jsonObject
+
+        SQLiteDatabase.openOrCreateDatabase(file, null).use { old ->
+            for (e in schema["entities"]!!.jsonArray) {
+                val table = e.jsonObject["tableName"]!!.jsonPrimitive.content
+                old.execSQL(e.jsonObject["createSql"]!!.jsonPrimitive.content.replace("\${TABLE_NAME}", table))
+                e.jsonObject["indices"]?.jsonArray?.forEach {
+                    old.execSQL(it.jsonObject["createSql"]!!.jsonPrimitive.content.replace("\${TABLE_NAME}", table))
+                }
+            }
+            schema["setupQueries"]!!.jsonArray.forEach { old.execSQL(it.jsonPrimitive.content) }
+            old.execSQL("insert into orders (id, locationId, tableLabel, createdAt) values ('o-1', 'l-1', 'T4', 1)")
+            old.version = 1
+        }
+
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, file.absolutePath)
+            .addMigrations(*AppDatabase.MIGRATIONS).allowMainThreadQueries().build()
+        try {
+            val kept = db.orderDao().order("o-1")!!
+            assertEquals("T4", kept.tableLabel)
+            assertNull(kept.checkId) // placed before check IDs existed, and already synced without one
+        } finally {
+            db.close()
+        }
+    }
+}

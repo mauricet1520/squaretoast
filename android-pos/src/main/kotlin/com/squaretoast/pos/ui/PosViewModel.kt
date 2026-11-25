@@ -18,6 +18,7 @@ import com.squaretoast.pos.payment.PaymentMethodSelector
 import com.squaretoast.pos.payment.TapToPayGate
 import com.squaretoast.pos.sync.CloudApi
 import com.squaretoast.pos.sync.DeviceCredentialStore
+import com.squaretoast.pos.sync.DeviceSession
 import com.squaretoast.pos.payment.KeystoreClaimKey
 import android.os.Build
 import com.squaretoast.pos.sync.OutboxDrainWorker
@@ -47,6 +48,7 @@ class PosViewModel @Inject constructor(
     private val cloud: CloudApi,
     private val terminal: TerminalSession,
     private val credentials: DeviceCredentialStore,
+    private val session: DeviceSession,
 ) : AndroidViewModel(app) {
 
     val openOrders: StateFlow<List<OrderEntity>> =
@@ -70,8 +72,8 @@ class PosViewModel @Inject constructor(
     private val _hubUrl = MutableStateFlow<String?>(null)
     val hubUrl: StateFlow<String?> = _hubUrl.asStateFlow()
 
-    private val _enrolled = MutableStateFlow(credentials.token() != null)
-    val enrolled: StateFlow<Boolean> = _enrolled.asStateFlow()
+    /** Turns false if the cloud rejects the token, which brings the enrollment screen back. */
+    val enrolled: StateFlow<Boolean> = session.enrolled
 
     /** Registers this phone with a one-time code and its Keystore claim key; the token is stored encrypted. */
     fun enroll(code: String) = viewModelScope.launch {
@@ -80,7 +82,7 @@ class PosViewModel @Inject constructor(
             credentials.save(cloud.enroll(code.trim(), key, Build.MODEL).deviceToken)
         }
         if (outcome.isSuccess) {
-            _enrolled.value = true
+            session.saved()
             OutboxDrainWorker.enqueue(app)
         } else {
             _message.value = "That code didn't work. Ask a manager for a new one."

@@ -322,6 +322,30 @@ class DeviceSyncIT {
     }
 
     @Test
+    void oversizedOrdersConflictBeforeTakingAnyStock() {
+        UUID water = m.menuItem(loc, "Water", 0); // untracked, so stock can't be the reason
+        UUID tooMany = UUID.randomUUID();
+        UUID tooLong = UUID.randomUUID();
+        UUID biggestAllowed = UUID.randomUUID();
+        List<Line> lines = new ArrayList<>();
+        for (int i = 0; i < 201; i++) {
+            lines.add(new Line(water, 1, 1, 1, 0));
+        }
+
+        HttpResponse<String> r = d.sync(pos.token(), List.of(
+                d.orderPlaced(tooMany, UUID.randomUUID(), loc, Map.of(1, UUID.randomUUID()), List.of(new Line(water, 1, 1, 1000, 0))),
+                d.orderPlaced(tooLong, UUID.randomUUID(), loc, Map.of(1, UUID.randomUUID()), lines),
+                d.orderPlaced(biggestAllowed, UUID.randomUUID(), loc, Map.of(1, UUID.randomUUID()),
+                        List.of(new Line(water, 1, 1, 999, 0)))));
+
+        assertThat(results(r)).containsOnly(
+                Map.entry(tooMany.toString(), List.of("CONFLICT", "INVALID_LINE")),
+                Map.entry(tooLong.toString(), List.of("CONFLICT", "INVALID_LINE")),
+                Map.entry(biggestAllowed.toString(), List.of("APPLIED", "")));
+        assertThat(m.onHand(patties)).isEqualTo(10);
+    }
+
+    @Test
     void batchesAreCappedAtFifty() {
         List<ObjectNode> many = new ArrayList<>();
         for (int i = 0; i < 51; i++) {

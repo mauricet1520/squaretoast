@@ -12,6 +12,8 @@ data class OrderEntity(
     val locationId: String,
     val tableLabel: String,
     val createdAt: Long,
+    /** The check's ID, made here so an offline claim and the synced check share it. Null for pre-v2 orders. */
+    val checkId: String? = null,
 )
 
 @Entity(

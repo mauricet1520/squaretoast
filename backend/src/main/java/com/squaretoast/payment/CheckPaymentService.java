@@ -31,6 +31,7 @@ public class CheckPaymentService {
 
     /** Throws {@link PaymentException.NotFound} unless the check is at {@code location}. */
     public StartedPayment start(UUID checkId, UUID location, UUID key, CardMethod method, long tipCents) {
+        PaymentException.TipOutOfRange.check(tipCents);
         if (!atLocation(checkId, location)) {
             throw new PaymentException.NotFound();
         }

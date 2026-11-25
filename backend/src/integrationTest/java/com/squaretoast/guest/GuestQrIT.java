@@ -406,4 +406,38 @@ class GuestQrIT {
         assertThat(d.guestPay(otherTable, check, UUID.randomUUID(), 0).statusCode()).isEqualTo(404);
         assertThat(d.guestPay(qr, check, UUID.randomUUID(), -1).statusCode()).isEqualTo(400);
     }
+
+    // ---------------------------------------------------------------- slice 7: limits
+
+    @Test
+    void aTipAboveTenThousandDollarsIsRefusedNeverAServerError() {
+        UUID check = acceptedCheck();
+
+        for (long tip : new long[] {1_000_001L, Long.MAX_VALUE}) {
+            HttpResponse<String> r = d.guestPay(qr, check, UUID.randomUUID(), tip);
+            assertThat(r.statusCode()).as("tip %d", tip).isEqualTo(422);
+            assertThat(body(r).get("error").asString()).isEqualTo("TIP_OUT_OF_RANGE");
+        }
+        assertThat(d.count("select count(*) from payment where check_id = ?", check)).isZero();
+        assertThat(d.guestPay(qr, check, UUID.randomUUID(), 1_000_000L).statusCode()).isEqualTo(200);
+    }
+
+    @Test
+    void aTableCanHaveAtMostTenOrdersWaitingForStaff() {
+        List<UUID> waiting = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            waiting.add(order(1));
+        }
+
+        HttpResponse<String> eleventh = d.guestOrder(qr, guestOrderBody(UUID.randomUUID(), List.of(new GuestLine(burger, 1, List.of()))));
+        assertThat(eleventh.statusCode()).isEqualTo(429);
+        assertThat(body(eleventh).get("error").asString()).isEqualTo("TOO_MANY_PENDING_ORDERS");
+
+        // A resend of an order already waiting is not a new order.
+        UUID resent = waiting.get(0);
+        assertThat(d.guestOrder(qr, guestOrderBody(resent, List.of(new GuestLine(burger, 1, List.of())))).statusCode()).isEqualTo(200);
+
+        assertThat(d.commit(pos.token(), waiting.get(1)).statusCode()).isEqualTo(200);
+        order(1); // staff accepted one, so there is room again
+    }
 }

@@ -35,6 +35,8 @@ android {
 
     // The shared JSON vectors are the contract with the backend's ports of the same rules.
     sourceSets["test"].resources.directories.add(rootProject.file("shared-test-vectors").path)
+    // Exported Room schemas, so migration tests can build each old version exactly.
+    sourceSets["test"].resources.directories.add(file("schemas").path)
 }
 
 kotlin { jvmToolchain(21) }

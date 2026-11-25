@@ -47,6 +47,7 @@ class OfflineClaimPayments {
     }
 
     Result pay(String token, UUID key, long tipCents) {
+        PaymentException.TipOutOfRange.check(tipCents);
         Claim c = claims.verify(token);
         payments.releaseStale(c.checkId()); // abandoned payments stop holding the balance (calls Stripe, no tx open)
         long amount = Objects.requireNonNull(tx.execute(s -> {
@@ -65,11 +66,14 @@ class OfflineClaimPayments {
 
             db.sql("""
                     insert into offline_check_claim(check_id, device_id, location_id, claim_sig, payload, expires_at,
-                                                    amount_cents, currency, status)
-                    values (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')
+                                                    amount_cents, currency, status, reconciled_at)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING',
+                            -- the POS may have synced this check before the guest scanned the claim
+                            (select now() from guest_check g join orders o on o.id = g.order_id
+                             where g.id = ? and o.location_id = ?))
                     on conflict (check_id) do nothing""")
                     .params(c.checkId(), c.deviceId(), c.locationId(), c.signature(), c.payload(),
-                            Timestamp.from(c.expiresAt()), c.totalCents(), c.currency())
+                            Timestamp.from(c.expiresAt()), c.totalCents(), c.currency(), c.checkId(), c.locationId())
                     .update();
             Stored stored = db.sql("""
                     select location_id, payload, expires_at from offline_check_claim where check_id = ? for update""")

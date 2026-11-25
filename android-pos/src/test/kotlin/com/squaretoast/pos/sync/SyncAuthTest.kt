@@ -58,6 +58,26 @@ class SyncAuthTest {
     }
 
     @Test
+    fun aLate401ForTheOldTokenDoesNotClearANewerOne() = runBlocking {
+        // The request goes out with the revoked token; the user re-enrolls before its 401 comes back.
+        val api = CloudApi(
+            "https://api.test",
+            HttpClient(MockEngine {
+                stored = "tok-new"
+                session.saved()
+                respond("""{"code":"UNAUTHORIZED"}""", HttpStatusCode.Unauthorized, headersOf(HttpHeaders.ContentType, "application/json"))
+            }),
+            session::token,
+            onRejectedCredential = session::rejected,
+        )
+
+        assertThrows(RejectedBatchException::class.java) { runBlocking { api.me() } }
+
+        assertEquals("tok-new", stored)
+        assertTrue(session.enrolled.value)
+    }
+
+    @Test
     fun enrollingAgainMarksTheSessionEnrolled() {
         session.rejected()
         assertFalse(session.enrolled.value)

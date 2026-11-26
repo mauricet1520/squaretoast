@@ -784,3 +784,68 @@ So this slice is Android only.
 - The unfolded inner-screen grid.
 
 **Audit:** no High findings. I fixed both Medium findings: the stale-menu banner and the refresh on resume. I also fixed the Low cancellation finding in `send`.
+
+---
+
+## 14. Slice 9 — item options on the POS ("no onion", "medium rare") (pending approval)
+
+**Goal.** Staff can ring up items with options on the POS. Required choices are enforced before Send. The kitchen sees them on the ticket. The server stays the only source of option prices.
+
+**Already there:**
+- the menu API returns groups (min/max) and options (price delta, available)
+- `order_line_modifier` exists
+- `OrderCommitService` validates selections at commit
+- `KdsTickets` already lists modifier names
+
+The gap is that the POS sync `Line` carries no options.
+
+**Backend (small):**
+1. **`MutationApplier.Line` gets an optional `optionIds`.** If the field is missing, it means none, so older POS builds keep working. More than 20 per line → CONFLICT `INVALID_LINE`.
+2. **`DeviceOrderService.PlacedLine` gets `optionIds`.** For each option it inserts an `order_line_modifier` row:
+   - The name and price delta come from `modifier_option` on the server. The device's prices are never used.
+   - The option must belong to a group linked to that menu item in the same location, or the result is CONFLICT `INVALID_LINE`.
+   - The existing commit validation then enforces min/max and availability, which gives CONFLICT `INVALID_MODIFIERS`.
+
+**Android:**
+3. **Room v4.**
+   - New tables: `modifier_group` (id, menuItemId, name, minSelect, maxSelect, position) and `modifier_option` (id, groupId, name, priceDeltaCents, available, position).
+   - `MIGRATION_3_4` adds the tables only.
+   - `MenuSync` stores groups and options in the same transaction as the items.
+4. **`OptionRules` (pure Kotlin).** `problems(groups, chosen)` returns plain-words problems, such as "Pick a cook temp" or "Pick up to 2 sauces", plus "Rare is sold out".
+5. **`Cart`.**
+   - A line is keyed by (item, seat, course, sorted option IDs), so the same burger with different options gets 2 lines.
+   - The display price is the base price plus the option deltas, all in long cents.
+   - `add(item, seat, course, options)` refuses a selection that has problems.
+   - `needsOptions` stops blocking: such items open the options sheet instead.
+6. **Payload.** `LinePayload` carries `optionIds`.
+7. **UI (M3).**
+   - Tapping an item that has groups opens a bottom sheet listing each group:
+     - "Required" or "Optional · up to N"
+     - a radio button for max = 1, check boxes otherwise
+     - the price delta shown as "+$1.50"
+     - sold-out options greyed
+   - The sheet's "Add · $16.00" button turns on only when there are no problems.
+   - Cart rows show the options under the item name.
+
+**First failing tests**
+
+| Test | Checks |
+|---|---|
+| `DeviceSyncIT.optionsArePricedAndNamedByTheServer` | rows use server name/delta; device price ignored; KDS ticket lists them |
+| `DeviceSyncIT.anOptionFromAnotherItemIsRejected` / `aMissingRequiredOptionIsRejected` | CONFLICT with reason, nothing committed |
+| `DeviceSyncIT.anOldPosWithoutOptionIdsStillSyncs` | backward compatible |
+| `AppDatabaseMigrationTest.v3ToV4` | v3 menu and orders kept; option tables exist |
+| `MenuSyncTest` | groups and options stored in server order; replaced together |
+| `OptionRulesTest` | required missing, over max, sold-out option, valid |
+| `CartTest` | different options → separate lines; price includes deltas; invalid selection refused |
+| `OrderOutboxTest` | ORDER_PLACED payload carries each line's optionIds |
+
+**Verification:**
+- `./gradlew :backend:check :backend:integrationTest` (sync and KDS ITs), Android tests and lint.
+- On the Fold5: order "Burger · Medium · No onion" and see both on the kitchen ticket.
+- `/security-review`, since this changes sync input on the server.
+
+**Out of scope:**
+- nested options
+- per-option inventory on the POS (the server still decrements at commit)
+- editing a sent line

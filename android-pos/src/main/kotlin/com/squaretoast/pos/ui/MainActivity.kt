@@ -33,6 +33,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LargeTopAppBar
@@ -103,9 +105,16 @@ private fun PosScreen(vm: PosViewModel) {
     }
     message?.let { MessageDialog(it, vm::dismissMessage) }
 
+    LaunchedEffect(Unit) { vm.refreshMenu() } // keep the saved menu (and its 86s) current while online
+
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     Scaffold(
         modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
+        floatingActionButton = {
+            ExtendedFloatingActionButton(onClick = { vm.startOrder() }) {
+                Text("+  New order", style = MaterialTheme.typography.titleMedium)
+            }
+        },
         topBar = {
             LargeTopAppBar(
                 title = { Text("SquareToast", fontWeight = FontWeight.SemiBold) },
@@ -265,7 +274,12 @@ private fun MessageDialog(text: String, dismiss: () -> Unit) {
 @Composable
 private fun Root(vm: PosViewModel) {
     val enrolled by vm.enrolled.collectAsState()
-    if (enrolled) PosScreen(vm) else EnrollScreen(vm)
+    val ordering by vm.ordering.collectAsState()
+    when {
+        !enrolled -> EnrollScreen(vm)
+        ordering -> OrderEntryScreen(vm)
+        else -> PosScreen(vm)
+    }
 }
 
 /** Shown until this phone is enrolled. The code comes from a manager and works once, for 15 minutes. */

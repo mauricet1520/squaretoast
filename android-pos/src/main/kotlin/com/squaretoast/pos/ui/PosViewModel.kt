@@ -5,6 +5,12 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.squaretoast.pos.data.AppDatabase
 import com.squaretoast.pos.data.CourseEntity
+import com.squaretoast.pos.data.MenuItemEntity
+import com.squaretoast.pos.data.MenuMetaEntity
+import com.squaretoast.pos.order.Cart
+import com.squaretoast.pos.order.CartLine
+import com.squaretoast.pos.order.MenuChoice
+import com.squaretoast.pos.sync.MenuSync
 import com.squaretoast.pos.data.OrderEntity
 import com.squaretoast.pos.data.OrderRepository
 import com.squaretoast.pos.domain.CourseAction
@@ -49,7 +55,55 @@ class PosViewModel @Inject constructor(
     private val terminal: TerminalSession,
     private val credentials: DeviceCredentialStore,
     private val session: DeviceSession,
+    private val menuSync: MenuSync,
 ) : AndroidViewModel(app) {
+
+    // ---- Order entry (plan 13). The cart lives here so it survives folding, unfolding and rotation. ----
+
+    val menu: StateFlow<List<MenuItemEntity>> =
+        db.menuDao().observeItems().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val menuMeta: StateFlow<MenuMetaEntity?> =
+        db.menuDao().observeMeta().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    private val _ordering = MutableStateFlow(false)
+    val ordering: StateFlow<Boolean> = _ordering.asStateFlow()
+    private val _cart = MutableStateFlow(Cart())
+    val cart: StateFlow<Cart> = _cart.asStateFlow()
+    private val _table = MutableStateFlow("")
+    val table: StateFlow<String> = _table.asStateFlow()
+    private val _sending = MutableStateFlow(false)
+    val sending: StateFlow<Boolean> = _sending.asStateFlow()
+
+    fun refreshMenu() = viewModelScope.launch { menuSync.refresh() }
+
+    fun startOrder(table: String = "") { _table.value = table; _ordering.value = true; refreshMenu() }
+    fun closeOrder() { _ordering.value = false }
+    fun setTable(label: String) { _table.value = label.take(24) }
+    fun add(item: MenuItemEntity, seat: Int, course: Int) {
+        val choice = MenuChoice(item.id, item.name, item.priceCents, item.available, item.needsOptions)
+        if (_cart.value.canAdd(choice)) _cart.value = _cart.value.add(choice, seat, course)
+    }
+    fun setQuantity(line: CartLine, qty: Int) { _cart.value = _cart.value.setQuantity(line.menuItemId, line.seat, line.course, qty) }
+
+    /** Saves the order on this phone and queues it for the cloud; works offline. The cart's IDs make a retry harmless. */
+    fun send() = viewModelScope.launch {
+        if (_sending.value) return@launch
+        val location = menuMeta.value?.locationId ?: db.menuDao().meta()?.locationId
+        if (location == null) { _message.value = "Menu not loaded yet. Connect to the internet once to load it."; return@launch }
+        _sending.value = true
+        val cart = _cart.value
+        val outcome = runCatching { orders.placeOrderOnce(cart.toPlaceOrder(_table.value, UUID.fromString(location))) }
+        _sending.value = false
+        if (outcome.isSuccess) {
+            OutboxDrainWorker.enqueue(app)
+            selected.value = cart.orderId.toString()
+            _cart.value = Cart()
+            _table.value = ""
+            _ordering.value = false
+        } else {
+            _message.value = "Couldn't save the order on this phone. Try again."
+        }
+    }
 
     val openOrders: StateFlow<List<OrderEntity>> =
         db.orderDao().observeOrders().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -84,6 +138,7 @@ class PosViewModel @Inject constructor(
         if (outcome.isSuccess) {
             session.saved()
             OutboxDrainWorker.enqueue(app)
+            refreshMenu()
         } else {
             _message.value = "That code didn't work. Ask a manager for a new one."
         }

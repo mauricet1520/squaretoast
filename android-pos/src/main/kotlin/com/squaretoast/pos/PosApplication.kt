@@ -9,6 +9,7 @@ import com.squaretoast.pos.log.ScrubbingTree
 import com.squaretoast.pos.sync.CloudApi
 import com.squaretoast.pos.sync.DeviceCredentialStore
 import com.squaretoast.pos.sync.DeviceSession
+import com.squaretoast.pos.sync.MenuSync
 import com.squaretoast.pos.sync.OutboxDrainer
 import com.squaretoast.pos.terminal.TerminalSession
 import com.squaretoast.pos.terminal.TerminalTokenProvider
@@ -56,6 +57,9 @@ object AppModule {
     @Provides @Singleton
     fun cloud(session: DeviceSession): CloudApi =
         CloudApi(BuildConfig.CLOUD_BASE_URL, HttpClient(OkHttp), session::token, onRejectedCredential = session::rejected)
+
+    @Provides @Singleton
+    fun menuSync(db: AppDatabase, cloud: CloudApi): MenuSync = MenuSync(db, cloud, Clock.systemUTC())
 
     @Provides
     fun drainer(db: AppDatabase, cloud: CloudApi): OutboxDrainer = OutboxDrainer(db, cloud)

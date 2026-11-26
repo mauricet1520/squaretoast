@@ -4,6 +4,8 @@ import androidx.room.withTransaction
 import com.squaretoast.pos.data.AppDatabase
 import com.squaretoast.pos.data.MenuItemEntity
 import com.squaretoast.pos.data.MenuMetaEntity
+import com.squaretoast.pos.data.ModifierGroupEntity
+import com.squaretoast.pos.data.ModifierOptionEntity
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.serialization.Serializable
 import java.time.Clock
@@ -52,9 +54,19 @@ class MenuSync(private val db: AppDatabase, private val api: MenuApi, private va
         val items = menu.items.mapIndexed { i, m ->
             MenuItemEntity(m.id, m.name, m.priceCents, m.currency, m.available, m.modifierGroups.any { it.minSelect > 0 }, i)
         }
+        val groups = menu.items.flatMap { m ->
+            m.modifierGroups.mapIndexed { i, g -> ModifierGroupEntity(m.id, g.id, g.name, g.minSelect, g.maxSelect, i) }
+        }
+        val options = menu.items.flatMap { it.modifierGroups }.flatMap { g ->
+            g.options.mapIndexed { i, o -> ModifierOptionEntity(o.id, g.id, o.name, o.priceDeltaCents, o.available, i) }
+        }
         db.withTransaction {
             db.menuDao().clearItems()
+            db.menuDao().clearGroups()
+            db.menuDao().clearOptions()
             db.menuDao().insertItems(items)
+            db.menuDao().insertGroups(groups)
+            db.menuDao().insertOptions(options)
             db.menuDao().putMeta(MenuMetaEntity(locationId = location, fetchedAt = clock.millis()))
         }
         return true

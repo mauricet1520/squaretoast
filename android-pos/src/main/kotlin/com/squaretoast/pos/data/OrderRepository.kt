@@ -47,6 +47,7 @@ private data class LinePayload(
     val menuItemId: String,
     val quantity: Int,
     val unitPriceCents: Long,
+    val optionIds: List<String>,
 )
 
 @Serializable
@@ -71,7 +72,7 @@ class OrderRepository(private val db: AppDatabase, private val clock: Clock) {
         }
         val checkId = UUID.randomUUID().toString()
         val payload = OrderPlacedPayload(orderId, cmd.locationId.toString(), cmd.tableLabel, cmd.lines.zip(lines) { n, l ->
-            LinePayload(l.id, l.courseId, n.course, l.seat, l.menuItemId, l.quantity, l.unitPriceCents)
+            LinePayload(l.id, l.courseId, n.course, l.seat, l.menuItemId, l.quantity, l.unitPriceCents, n.optionIds)
         }, checkId)
 
         db.withTransaction {

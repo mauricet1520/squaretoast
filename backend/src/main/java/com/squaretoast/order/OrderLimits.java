@@ -5,6 +5,7 @@ final class OrderLimits {
 
     static final int MAX_QTY = 999;
     static final int MAX_LINES = 200;
+    static final int MAX_OPTIONS_PER_LINE = 20;
 
     private OrderLimits() {}
 }

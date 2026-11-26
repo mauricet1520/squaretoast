@@ -80,7 +80,17 @@ abstract class AppDatabase : RoomDatabase() {
         /** v4: modifier groups and options, so items with options can be rung up (plan 14). Adds tables only. */
         val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                TODO("Slice 9")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `modifier_group` (`menuItemId` TEXT NOT NULL, `id` TEXT NOT NULL, " +
+                        "`name` TEXT NOT NULL, `minSelect` INTEGER NOT NULL, `maxSelect` INTEGER NOT NULL, " +
+                        "`position` INTEGER NOT NULL, PRIMARY KEY(`menuItemId`, `id`))",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `modifier_option` (`id` TEXT NOT NULL, `groupId` TEXT NOT NULL, " +
+                        "`name` TEXT NOT NULL, `priceDeltaCents` INTEGER NOT NULL, `available` INTEGER NOT NULL, " +
+                        "`position` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_modifier_option_groupId` ON `modifier_option` (`groupId`)")
             }
         }
 

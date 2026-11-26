@@ -25,10 +25,16 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class DeviceOrderService {
 
-    /** A line as the device sent it. The device's price is never used: lines are priced from the menu. */
-    public record PlacedLine(UUID lineId, UUID courseId, int course, int seat, UUID menuItemId, int quantity) {}
+    /**
+     * A line as the device sent it. The device's prices are never used: the line and each option are priced and
+     * named from the menu.
+     */
+    public record PlacedLine(UUID lineId, UUID courseId, int course, int seat, UUID menuItemId, int quantity,
+                             List<UUID> optionIds) {}
 
     private record MenuLine(long priceCents, String taxCategory, String temp, String name) {}
+
+    private record MenuOption(long deltaCents, String name) {}
 
     private final JdbcClient db;
     private final OrderCommitService commits;
@@ -48,7 +54,9 @@ public class DeviceOrderService {
         if (lines.isEmpty()) {
             throw new OrderRejected("INVALID_MUTATION");
         }
-        if (lines.size() > OrderLimits.MAX_LINES || lines.stream().anyMatch(l -> l.quantity() > OrderLimits.MAX_QTY)) {
+        if (lines.size() > OrderLimits.MAX_LINES || lines.stream().anyMatch(l -> l.quantity() > OrderLimits.MAX_QTY
+                || l.optionIds().size() > OrderLimits.MAX_OPTIONS_PER_LINE
+                || l.optionIds().stream().distinct().count() != l.optionIds().size())) { // a repeat would charge twice
             throw new OrderRejected("INVALID_LINE");
         }
         Map<Integer, UUID> courses = new LinkedHashMap<>();
@@ -113,6 +121,21 @@ public class DeviceOrderService {
                     .params(l.lineId(), orderId, Objects.requireNonNull(seatIds.get(l.seat())), l.courseId(), l.menuItemId(), l.quantity(),
                             m.priceCents(), m.taxCategory(), m.temp(), m.name())
                     .update();
+            for (UUID optionId : l.optionIds()) {
+                // Only an option in a group linked to this item, at this location; named and priced by the server.
+                MenuOption o = db.sql("""
+                        select o.price_delta_cents, o.name from modifier_option o
+                        join modifier_group g on g.id = o.modifier_group_id
+                        join menu_item_modifier_group mg on mg.modifier_group_id = g.id
+                        where o.id = ? and mg.menu_item_id = ? and g.location_id = ?""")
+                        .params(optionId, l.menuItemId(), location)
+                        .query((rs, n) -> new MenuOption(rs.getLong("price_delta_cents"), rs.getString("name")))
+                        .optional().orElseThrow(() -> new OrderRejected("INVALID_LINE"));
+                db.sql("""
+                        insert into order_line_modifier(id, order_line_id, modifier_option_id, price_delta_cents, name_snapshot)
+                        values (?, ?, ?, ?, ?)""")
+                        .params(UUID.randomUUID(), l.lineId(), optionId, o.deltaCents(), o.name()).update();
+            }
             db.sql("insert into check_allocation(check_id, order_line_id, numerator, denominator) values (?, ?, 1, 1)")
                     .params(check, l.lineId()).update();
         }

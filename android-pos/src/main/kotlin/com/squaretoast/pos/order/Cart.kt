@@ -41,26 +41,40 @@ data class Cart(
 
     fun add(item: MenuChoice, seat: Int, course: Int): Cart {
         require(canAdd(item)) { "${item.name} can't be added" }
-        require(seat > 0 && course > 0) { "seats and courses start at 1" }
-        val existing = lines.find { it.menuItemId == item.menuItemId && it.seat == seat && it.course == course }
-        return if (existing == null) {
-            copy(lines = lines + CartLine(item.menuItemId, item.name, seat, course, 1, item.priceCents))
-        } else {
-            setQuantity(item.menuItemId, seat, course, existing.quantity + 1)
-        }
+        return addLine(item, seat, course, emptyList())
     }
 
     /** Adds an item with options; the unit price includes the option deltas. Refused if [OptionRules] finds problems. */
-    fun addWithOptions(item: MenuChoice, seat: Int, course: Int, groups: List<OptionGroup>, chosenIds: List<String>): Cart =
-        TODO("Slice 9")
-
-    fun setQuantity(line: CartLine, quantity: Int): Cart = TODO("Slice 9")
-
-    fun setQuantity(menuItemId: String, seat: Int, course: Int, quantity: Int): Cart {
-        require(quantity >= 0) { "quantity can't be negative" }
-        val match = { l: CartLine -> l.menuItemId == menuItemId && l.seat == seat && l.course == course }
-        return copy(lines = if (quantity == 0) lines.filterNot(match) else lines.map { if (match(it)) it.copy(quantity = quantity) else it })
+    fun addWithOptions(item: MenuChoice, seat: Int, course: Int, groups: List<OptionGroup>, chosenIds: List<String>): Cart {
+        require(item.available) { "${item.name} is sold out" }
+        val problems = OptionRules.problems(groups, chosenIds)
+        require(problems.isEmpty()) { problems.joinToString("; ") }
+        val byId = groups.flatMap { it.options }.associateBy { it.id }
+        val chosen = chosenIds.sorted().map { id -> byId.getValue(id).let { ChosenOption(it.id, it.name, it.priceDeltaCents) } }
+        return addLine(item, seat, course, chosen)
     }
+
+    private fun addLine(item: MenuChoice, seat: Int, course: Int, options: List<ChosenOption>): Cart {
+        require(seat > 0 && course > 0) { "seats and courses start at 1" }
+        val unit = item.priceCents + options.sumOf { it.priceDeltaCents }
+        val new = CartLine(item.menuItemId, item.name, seat, course, 1, unit, options)
+        val existing = lines.find { it.sameAs(new) }
+        return if (existing == null) copy(lines = lines + new) else setQuantity(existing, existing.quantity + 1)
+    }
+
+    /** Changes exactly this line: same item, seat, course and options. */
+    fun setQuantity(line: CartLine, quantity: Int): Cart {
+        require(quantity >= 0) { "quantity can't be negative" }
+        return copy(lines = if (quantity == 0) lines.filterNot { it.sameAs(line) }
+            else lines.map { if (it.sameAs(line)) it.copy(quantity = quantity) else it })
+    }
+
+    /** The plain line (no options) for this item, seat and course. */
+    fun setQuantity(menuItemId: String, seat: Int, course: Int, quantity: Int): Cart =
+        setQuantity(CartLine(menuItemId, "", seat, course, 0, 0), quantity)
+
+    private fun CartLine.sameAs(o: CartLine) =
+        menuItemId == o.menuItemId && seat == o.seat && course == o.course && options.map { it.id } == o.options.map { it.id }
 
     fun toPlaceOrder(tableLabel: String, locationId: UUID): PlaceOrder {
         val table = tableLabel.trim()
@@ -71,7 +85,9 @@ data class Cart(
             orderId = orderId,
             locationId = locationId,
             tableLabel = table,
-            lines = lines.map { NewLine(it.seat, it.course, it.menuItemId, it.name, it.quantity, it.unitPriceCents) },
+            lines = lines.map {
+                NewLine(it.seat, it.course, it.menuItemId, it.name, it.quantity, it.unitPriceCents, it.options.map { o -> o.id })
+            },
         )
     }
 }

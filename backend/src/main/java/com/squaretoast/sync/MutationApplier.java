@@ -37,7 +37,9 @@ class MutationApplier {
     private record OrderPlaced(String orderId, String locationId, @Nullable String tableLabel, List<Line> lines,
                                @Nullable String checkId) {}
 
-    private record Line(String lineId, String courseId, int course, int seat, String menuItemId, int quantity) {}
+    /** {@code optionIds} is absent from POS builds before Slice 9; that means no options. */
+    private record Line(String lineId, String courseId, int course, int seat, String menuItemId, int quantity,
+                        @Nullable List<String> optionIds) {}
 
     private record CourseTransitioned(String courseId, String action, String from) {}
 
@@ -109,7 +111,8 @@ class MutationApplier {
                     }
                     List<PlacedLine> lines = p.lines().stream().map(l -> new PlacedLine(UUID.fromString(l.lineId()),
                             UUID.fromString(l.courseId()), l.course(), l.seat(), UUID.fromString(l.menuItemId()),
-                            l.quantity())).toList();
+                            l.quantity(), l.optionIds() == null ? List.of()
+                                    : l.optionIds().stream().map(UUID::fromString).toList())).toList();
                     String check = p.checkId();
                     orders.placeOrder(device.deviceId(), device.locationId(), orderId, p.tableLabel(), lines,
                             check == null ? null : UUID.fromString(check));

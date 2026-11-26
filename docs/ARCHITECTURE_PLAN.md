@@ -974,3 +974,19 @@ The gap is that the POS sync `Line` carries no options.
 - Not run: the full backend IT suite, and a real Tap to Pay charge (needs your Stripe test key).
 
 **Open:** the split shares include the POS tip, but guests paying by QR pick their own tip. Paying a single share needs server-side split checks, planned for a later slice.
+
+---
+
+## 16. Slice 11 — 86 from the POS (mark stock sold out and back)
+
+Today the server can 86 an inventory item, and the POS shows "86'd" badges, but no screen lets staff do it. Square and Toast both bury this; here it is one tap from order entry.
+
+### 16.1 Decisions
+- **New read endpoint** `GET /api/v1/locations/{locationId}/inventory` (device token). Returns `items: [{id, name, tracked, onHand, eightySixed}]` sorted by name. Another location, or an unknown one, gives 404. Not part of the guest menu, so stock counts never reach guests.
+- **POS "Sold out" sheet** opened from order entry: a list of stock with a switch each. A switch calls the existing PUT `.../eighty-six`, then refreshes the menu so badges update. Needs a connection; offline it says so (an 86 must be server truth, so it is not queued in the outbox).
+- **Pure helper** `order/StockList` filters by search text and puts 86'd items first.
+- **Local seed** adds stock: "Burger patty" (Burger) and "Bacon" (the Bacon option).
+
+### 16.2 RED tests first
+- Backend `InventoryListIT`: lists the location's stock with on-hand and 86 state; another location → 404; an 86 via PUT shows up in the list.
+- Android `StockListTest`: search, ordering, empty search returns all.

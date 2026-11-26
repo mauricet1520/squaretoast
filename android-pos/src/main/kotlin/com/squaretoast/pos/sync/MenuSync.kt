@@ -22,7 +22,16 @@ data class MenuItemDto(
 )
 
 @Serializable
-data class ModifierGroupDto(val minSelect: Int)
+data class ModifierGroupDto(
+    val minSelect: Int,
+    val id: String = "",
+    val name: String = "",
+    val maxSelect: Int = maxOf(minSelect, 1),
+    val options: List<ModifierOptionDto> = emptyList(),
+)
+
+@Serializable
+data class ModifierOptionDto(val id: String, val name: String, val priceDeltaCents: Long, val available: Boolean = true)
 
 /** What menu sync needs from the cloud. */
 interface MenuApi {

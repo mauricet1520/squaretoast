@@ -14,5 +14,13 @@ interface MenuDao {
     @Query("select * from menu_meta where id = 0") fun observeMeta(): Flow<MenuMetaEntity?>
     @Query("delete from menu_item") suspend fun clearItems()
     @Insert(onConflict = OnConflictStrategy.ABORT) suspend fun insertItems(items: List<MenuItemEntity>)
+    @Query("select * from modifier_group where menuItemId = :menuItemId order by position") suspend fun groupsFor(menuItemId: String): List<ModifierGroupEntity>
+    @Query("select * from modifier_option where groupId in (:groupIds) order by position") suspend fun optionsFor(groupIds: List<String>): List<ModifierOptionEntity>
+    @Query("select distinct menuItemId from modifier_group") fun observeItemsWithOptions(): Flow<List<String>>
+    @Query("delete from modifier_group") suspend fun clearGroups()
+    @Query("delete from modifier_option") suspend fun clearOptions()
+    @Insert(onConflict = OnConflictStrategy.ABORT) suspend fun insertGroups(groups: List<ModifierGroupEntity>)
+    /** A shared group is listed under each of its items; its options are stored once. */
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertOptions(options: List<ModifierOptionEntity>)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putMeta(meta: MenuMetaEntity)
 }

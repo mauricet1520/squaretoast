@@ -358,4 +358,104 @@ class DeviceSyncIT {
         assertThat(empty.statusCode()).isEqualTo(200);
         assertThat(body(empty).get("results").size()).isZero();
     }
+
+    // ------------------------------------------------------------------ item options (Slice 9)
+
+    private record Steak(UUID item, UUID medium, UUID rare, UUID bacon, UUID otherItemsOption) {}
+
+    /** Steak: cook temp required (pick 1), extras optional (up to 2). The option outside belongs to another item. */
+    private Steak steak() {
+        UUID item = m.menuItem(loc, "Steak", 3000);
+        UUID cook = m.group(loc, "Cook temp", 1, 1);
+        UUID extras = m.group(loc, "Extras", 0, 2);
+        m.link(item, cook);
+        m.link(item, extras);
+        UUID dessertGroup = m.group(loc, "Topping", 0, 1);
+        m.link(m.menuItem(loc, "Sundae", 700), dessertGroup);
+        return new Steak(item, m.option(cook, "Medium", 0), m.option(cook, "Rare", 0), m.option(extras, "Bacon", 250),
+                m.option(dessertGroup, "Sprinkles", 50));
+    }
+
+    private ObjectNode steakOrder(UUID mutation, UUID order, Steak s, List<UUID> options) {
+        ObjectNode placed = d.orderPlaced(mutation, order, loc, Map.of(1, UUID.randomUUID()),
+                List.of(new Line(s.item(), 1, 1, 1, 1))); // the device claims 1 cent
+        return d.withOptions(placed, 0, options);
+    }
+
+    @Test
+    void optionsArePricedAndNamedByTheServer() {
+        Steak s = steak();
+        UUID mutation = UUID.randomUUID();
+        UUID order = UUID.randomUUID();
+
+        HttpResponse<String> r = d.sync(pos.token(), List.of(steakOrder(mutation, order, s, List.of(s.medium(), s.bacon()))));
+
+        assertThat(results(r)).containsExactly(Map.entry(mutation.toString(), List.of("APPLIED", "")));
+        assertThat(d.count("select count(*) from orders where id = ? and status = 'COMMITTED'", order)).isEqualTo(1);
+        assertThat(d.count("select count(*) from order_line where order_id = ? and unit_price_cents = 3000", order)).isEqualTo(1);
+        assertThat(d.count("""
+                select count(*) from order_line_modifier m join order_line l on l.id = m.order_line_id
+                where l.order_id = ? and ((m.modifier_option_id = ? and m.name_snapshot = 'Medium' and m.price_delta_cents = 0)
+                                       or (m.modifier_option_id = ? and m.name_snapshot = 'Bacon' and m.price_delta_cents = 250))""",
+                order, s.medium(), s.bacon())).isEqualTo(2);
+        assertThat(d.count("select count(*) from order_line_modifier m join order_line l on l.id = m.order_line_id where l.order_id = ?",
+                order)).isEqualTo(2);
+    }
+
+    @Test
+    void anOptionFromAnotherItemIsRejectedAndNothingIsWritten() {
+        Steak s = steak();
+        UUID mutation = UUID.randomUUID();
+        UUID order = UUID.randomUUID();
+
+        HttpResponse<String> r = d.sync(pos.token(),
+                List.of(steakOrder(mutation, order, s, List.of(s.medium(), s.otherItemsOption()))));
+
+        assertThat(results(r)).containsExactly(Map.entry(mutation.toString(), List.of("CONFLICT", "INVALID_LINE")));
+        assertThat(d.count("select count(*) from orders where id = ?", order)).isZero();
+    }
+
+    @Test
+    void anUnknownOrRepeatedOptionIsRejected() {
+        Steak s = steak();
+        UUID unknown = UUID.randomUUID();
+        UUID twice = UUID.randomUUID();
+
+        HttpResponse<String> r = d.sync(pos.token(), List.of(
+                steakOrder(unknown, UUID.randomUUID(), s, List.of(s.medium(), UUID.randomUUID())),
+                steakOrder(twice, UUID.randomUUID(), s, List.of(s.medium(), s.bacon(), s.bacon())))); // bacon charged twice
+
+        assertThat(results(r)).containsOnly(
+                Map.entry(unknown.toString(), List.of("CONFLICT", "INVALID_LINE")),
+                Map.entry(twice.toString(), List.of("CONFLICT", "INVALID_LINE")));
+    }
+
+    @Test
+    void aMissingRequiredChoiceOrTooManyChoicesConflict() {
+        Steak s = steak();
+        UUID none = UUID.randomUUID();
+        UUID both = UUID.randomUUID();
+
+        HttpResponse<String> r = d.sync(pos.token(), List.of(
+                steakOrder(none, UUID.randomUUID(), s, List.of()),
+                steakOrder(both, UUID.randomUUID(), s, List.of(s.medium(), s.rare()))));
+
+        assertThat(results(r)).containsOnly(
+                Map.entry(none.toString(), List.of("CONFLICT", "INVALID_MODIFIERS")),
+                Map.entry(both.toString(), List.of("CONFLICT", "INVALID_MODIFIERS")));
+    }
+
+    @Test
+    void moreThanTwentyOptionsOnALineConflict() {
+        Steak s = steak();
+        UUID mutation = UUID.randomUUID();
+        List<UUID> many = new ArrayList<>();
+        for (int i = 0; i < 21; i++) {
+            many.add(UUID.randomUUID());
+        }
+
+        HttpResponse<String> r = d.sync(pos.token(), List.of(steakOrder(mutation, UUID.randomUUID(), s, many)));
+
+        assertThat(results(r)).containsExactly(Map.entry(mutation.toString(), List.of("CONFLICT", "INVALID_LINE")));
+    }
 }

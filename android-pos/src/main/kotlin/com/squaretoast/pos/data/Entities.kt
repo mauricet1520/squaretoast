@@ -83,3 +83,25 @@ data class MenuMetaEntity(
     val locationId: String,
     val fetchedAt: Long,
 )
+
+/** A modifier group as linked to one menu item (a group can be shared, so the key includes the item). */
+@Entity(tableName = "modifier_group", primaryKeys = ["menuItemId", "id"])
+data class ModifierGroupEntity(
+    val menuItemId: String,
+    val id: String,
+    val name: String,
+    val minSelect: Int,
+    val maxSelect: Int,
+    val position: Int,
+)
+
+/** Prices are display estimates; the server prices every option from its own menu. */
+@Entity(tableName = "modifier_option", indices = [Index("groupId")])
+data class ModifierOptionEntity(
+    @PrimaryKey val id: String,
+    val groupId: String,
+    val name: String,
+    val priceDeltaCents: Long,
+    val available: Boolean,
+    val position: Int,
+)

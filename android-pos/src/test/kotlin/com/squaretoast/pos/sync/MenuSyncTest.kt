@@ -100,4 +100,34 @@ class MenuSyncTest {
         assertEquals(listOf("tacos"), db.menuDao().items().map { it.id })
         assertEquals("loc-2", db.menuDao().meta()!!.locationId)
     }
+
+    @Test
+    fun groupsAndOptionsAreStoredWithTheirItemsAndReplacedTogether() = runBlocking {
+        val cook = ModifierGroupDto(minSelect = 1, id = "g-cook", name = "Cook temp", maxSelect = 1, options = listOf(
+            ModifierOptionDto("o-rare", "Rare", 0, available = false), ModifierOptionDto("o-med", "Medium", 0)))
+        val extras = ModifierGroupDto(minSelect = 0, id = "g-extras", name = "Extras", maxSelect = 2, options = listOf(
+            ModifierOptionDto("o-bacon", "Bacon", 250)))
+        val api = FakeApi("loc-1") { MenuDto(listOf(
+            MenuItemDto("steak", "Steak", 3000, "USD", true, listOf(cook, extras)),
+            MenuItemDto("burger", "Burger", 1299, "USD", true, listOf(extras)), // a shared group
+        )) }
+
+        assertTrue(MenuSync(db, api, clock).refresh())
+
+        val steakGroups = db.menuDao().groupsFor("steak")
+        assertEquals(listOf("g-cook", "g-extras"), steakGroups.map { it.id })
+        assertEquals(listOf(1 to 1, 0 to 2), steakGroups.map { it.minSelect to it.maxSelect })
+        assertEquals(listOf("Cook temp", "Extras"), steakGroups.map { it.name })
+        assertEquals(listOf("g-extras"), db.menuDao().groupsFor("burger").map { it.id })
+        val options = db.menuDao().optionsFor(listOf("g-cook", "g-extras"))
+        assertEquals(setOf("o-rare", "o-med", "o-bacon"), options.map { it.id }.toSet())
+        assertEquals(listOf("o-rare", "o-med"), options.filter { it.groupId == "g-cook" }.map { it.id })
+        assertEquals(false, options.single { it.id == "o-rare" }.available)
+        assertEquals(250L, options.single { it.id == "o-bacon" }.priceDeltaCents)
+
+        api.menu = { MenuDto(listOf(MenuItemDto("tacos", "Tacos", 900, "USD", true))) }
+        assertTrue(MenuSync(db, api, clock).refresh())
+        assertEquals(emptyList<Any>(), db.menuDao().groupsFor("steak"))
+        assertEquals(emptyList<Any>(), db.menuDao().optionsFor(listOf("g-cook", "g-extras")))
+    }
 }

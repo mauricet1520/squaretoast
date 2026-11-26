@@ -179,4 +179,16 @@ class OrderOutboxTest {
         assertEquals(1, placed.count { it })
         assertEquals(1, db.outboxDao().all().size)
     }
+
+    @Test
+    fun eachLineInThePayloadCarriesItsOptionIds() = runBlocking {
+        val cmd = order().let { o ->
+            o.copy(lines = listOf(o.lines[0].copy(optionIds = listOf("o-med", "o-noonion")), o.lines[1]))
+        }
+        repo.placeOrder(cmd)
+
+        val lines = Json.parseToJsonElement(db.outboxDao().all().single().payloadJson).jsonObject["lines"]!!.jsonArray
+        assertEquals(listOf("o-med", "o-noonion"), lines[0].jsonObject["optionIds"]!!.jsonArray.map { it.jsonPrimitive.content })
+        assertEquals(0, lines[1].jsonObject["optionIds"]!!.jsonArray.size)
+    }
 }

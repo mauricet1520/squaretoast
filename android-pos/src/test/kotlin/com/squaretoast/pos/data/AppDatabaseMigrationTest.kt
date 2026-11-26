@@ -84,4 +84,37 @@ class AppDatabaseMigrationTest {
             db.close()
         }
     }
+
+    @Test
+    fun aVersionThreeDatabaseKeepsItsMenuAndGetsEmptyOptionTables() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val file = context.getDatabasePath("migrate3.db").apply { parentFile?.mkdirs(); delete() }
+        val schema = Json.parseToJsonElement(
+            checkNotNull(javaClass.classLoader?.getResource("com.squaretoast.pos.data.AppDatabase/3.json")).readText(),
+        ).jsonObject["database"]!!.jsonObject
+
+        SQLiteDatabase.openOrCreateDatabase(file, null).use { old ->
+            for (e in schema["entities"]!!.jsonArray) {
+                val table = e.jsonObject["tableName"]!!.jsonPrimitive.content
+                old.execSQL(e.jsonObject["createSql"]!!.jsonPrimitive.content.replace("\${TABLE_NAME}", table))
+                e.jsonObject["indices"]?.jsonArray?.forEach {
+                    old.execSQL(it.jsonObject["createSql"]!!.jsonPrimitive.content.replace("\${TABLE_NAME}", table))
+                }
+            }
+            schema["setupQueries"]!!.jsonArray.forEach { old.execSQL(it.jsonPrimitive.content) }
+            old.execSQL("insert into orders (id, locationId, tableLabel, createdAt, checkId) values ('o-3', 'l-1', 'T2', 1, 'c-3')")
+            old.execSQL("insert into menu_item (id, name, priceCents, currency, available, needsOptions, position) values ('steak', 'Steak', 3000, 'USD', 1, 1, 0)")
+            old.version = 3
+        }
+
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, file.absolutePath)
+            .addMigrations(*AppDatabase.MIGRATIONS).allowMainThreadQueries().build()
+        try {
+            assertEquals("T2", db.orderDao().order("o-3")!!.tableLabel)
+            assertEquals(listOf("steak"), db.menuDao().items().map { it.id })
+            assertEquals(emptyList<ModifierGroupEntity>(), db.menuDao().groupsFor("steak"))
+        } finally {
+            db.close()
+        }
+    }
 }

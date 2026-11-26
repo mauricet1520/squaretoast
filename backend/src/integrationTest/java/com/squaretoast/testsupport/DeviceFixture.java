@@ -171,6 +171,15 @@ public final class DeviceFixture {
         return mutation(mutationId, order, "ORDER_PLACED", payload.toString());
     }
 
+    /** The same ORDER_PLACED mutation with {@code optionIds} set on one of its lines, as a Slice 9 POS sends it. */
+    public ObjectNode withOptions(ObjectNode orderPlaced, int lineIndex, List<UUID> optionIds) {
+        ObjectNode payload = (ObjectNode) JSON.readTree(orderPlaced.get("payloadJson").asString());
+        ArrayNode ids = JSON.createArrayNode();
+        optionIds.forEach(id -> ids.add(id.toString()));
+        ((ObjectNode) payload.get("lines").get(lineIndex)).set("optionIds", ids);
+        return orderPlaced.put("payloadJson", payload.toString());
+    }
+
     public ObjectNode courseTransitioned(UUID mutationId, UUID order, UUID course, String action, String from, String to) {
         String payload = JSON.createObjectNode().put("courseId", course.toString()).put("action", action)
                 .put("from", from).put("to", to).toString();

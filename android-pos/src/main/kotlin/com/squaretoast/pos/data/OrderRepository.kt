@@ -16,6 +16,8 @@ data class NewLine(
     val name: String,
     val quantity: Int,
     val unitPriceCents: Long,
+    /** Modifier option IDs only; the server names and prices them. */
+    val optionIds: List<String> = emptyList(),
 )
 
 /** mutationId is created once per user action, so a retried command can never be applied twice. */

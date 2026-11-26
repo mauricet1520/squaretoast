@@ -44,9 +44,9 @@ interface OutboxDao {
 @Database(
     entities = [
         OrderEntity::class, CourseEntity::class, OrderLineEntity::class, OutboxEntity::class,
-        MenuItemEntity::class, MenuMetaEntity::class,
+        MenuItemEntity::class, MenuMetaEntity::class, ModifierGroupEntity::class, ModifierOptionEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -77,6 +77,13 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        val MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
+        /** v4: modifier groups and options, so items with options can be rung up (plan 14). Adds tables only. */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                TODO("Slice 9")
+            }
+        }
+
+        val MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
     }
 }

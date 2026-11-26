@@ -20,6 +20,8 @@ data class CartLine(
     val course: Int,
     val quantity: Int,
     val unitPriceCents: Long,
+    /** Sorted by ID, so the same choices always make the same line. */
+    val options: List<ChosenOption> = emptyList(),
 ) {
     val totalCents: Long get() = unitPriceCents * quantity
 }
@@ -47,6 +49,12 @@ data class Cart(
             setQuantity(item.menuItemId, seat, course, existing.quantity + 1)
         }
     }
+
+    /** Adds an item with options; the unit price includes the option deltas. Refused if [OptionRules] finds problems. */
+    fun addWithOptions(item: MenuChoice, seat: Int, course: Int, groups: List<OptionGroup>, chosenIds: List<String>): Cart =
+        TODO("Slice 9")
+
+    fun setQuantity(line: CartLine, quantity: Int): Cart = TODO("Slice 9")
 
     fun setQuantity(menuItemId: String, seat: Int, course: Int, quantity: Int): Cart {
         require(quantity >= 0) { "quantity can't be negative" }

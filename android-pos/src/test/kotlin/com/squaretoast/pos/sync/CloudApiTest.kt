@@ -128,4 +128,22 @@ class CloudApiTest {
         assertEquals(false, item.available)
         assertEquals(1, item.modifierGroups.single().minSelect)
     }
+
+    @Test
+    fun menuOptionsAreParsedWithTheirGroups() = runBlocking {
+        val api = api("tok") {
+            json("""{"items":[{"id":"i-1","name":"Steak","priceCents":3000,"currency":"USD","available":true,
+                "modifierGroups":[{"id":"g-1","name":"Cook temp","minSelect":1,"maxSelect":1,"options":[
+                    {"id":"o-1","name":"Medium","priceDeltaCents":0,"currency":"USD","available":true},
+                    {"id":"o-2","name":"Rare","priceDeltaCents":0,"available":false}]}]}]}""")
+        }
+
+        val group = api.menu("l-1").items.single().modifierGroups.single()
+
+        assertEquals("g-1", group.id)
+        assertEquals("Cook temp", group.name)
+        assertEquals(1, group.maxSelect)
+        assertEquals(listOf("Medium", "Rare"), group.options.map { it.name })
+        assertEquals(listOf(true, false), group.options.map { it.available })
+    }
 }

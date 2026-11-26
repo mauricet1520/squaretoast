@@ -849,3 +849,42 @@ The gap is that the POS sync `Line` carries no options.
 - nested options
 - per-option inventory on the POS (the server still decrements at commit)
 - editing a sent line
+
+### 14.1 Results and changes from the plan (2026-11-26)
+
+**Changes:**
+- **Adding items with options.** `Cart.addWithOptions(item, seat, course, groups, chosenIds)` is a separate call. Plain `add` still refuses needs-options items, so the Slice 8 tests stay unchanged. Items with any group open the options sheet.
+- **Repeated option IDs.** A line with the same option twice → CONFLICT `INVALID_LINE`, because it would charge twice.
+- **KDS check.** The KDS check is the phone test below, not an IT. `KdsTickets` already lists `order_line_modifier` names.
+- **`aMissingRequiredChoiceOrTooManyChoicesConflict`.** It passed before any change, thanks to commit validation, and stays as a regression test.
+- **Sheet group labels.** "Required", "Pick N", "Pick a–b" or "Optional · up to N".
+- **Local dev seed.** The Burger now has Cook temp (required) and Extras (up to 2).
+- **Added during the phone test: OK on a refused change.**
+  - The old sync-conflict alert had no button, so one refused order froze the POS for good.
+  - The alert now says in plain words what was refused and why, and has an OK button.
+  - OK on a refused order removes it from the phone and stops its queued course changes.
+  - Rows are kept as ACKNOWLEDGED. Tests first: `ConflictAckTest`.
+  - The go-ahead came relayed from the Session Manager session ("All yes for now"), not typed here.
+
+**Verified on the Fold5:**
+- The sheet blocks Add until a cook temp is picked.
+- Burger · Medium rare · Bacon · No onion showed $17.00.
+- The server stored the options with its own names and prices (Bacon +250, the others +0) and committed the order.
+- After firing course 1, the browser KDS showed "1× Burger — Bacon, Medium rare, No onion".
+- An order refused by a stale backend showed the new alert; OK removed it and the POS kept working.
+
+**Checks:**
+- Android: 116 tests and lint pass.
+- `:backend:check` passes. DeviceSyncIT (23), KdsIT (11) and GuestQrIT (18) pass.
+- Not rerun: the full backend IT suite.
+
+**Security review (manual, server diff):** no High or Medium findings.
+- Option SQL is parameterised.
+- The location comes from the device token.
+- Each option must link to that item at that location.
+- Prices and names come from the server.
+- Negative totals are still refused at commit.
+- A null option ID → INVALID_MUTATION.
+- Low: a device can now make up to 20 option lookups per line (200 lines, 50 mutations per batch). It needs an enrolled token; batching the lookups into one query is a later clean-up.
+
+**Audit:** no High or Medium findings. The Low findings are written down above.

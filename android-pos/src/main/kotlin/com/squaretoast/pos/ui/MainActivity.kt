@@ -97,7 +97,6 @@ private fun PosScreen(vm: PosViewModel) {
     val courses by vm.courses.collectAsState()
     val conflicts by vm.conflicts.collectAsState()
     val message by vm.message.collectAsState()
-    val choice by vm.choice.collectAsState()
     val hubUrl by vm.hubUrl.collectAsState()
 
     conflicts.firstOrNull()?.let { row ->
@@ -164,18 +163,8 @@ private fun PosScreen(vm: PosViewModel) {
             if (selected != null) {
                 items(courses, key = { it.id }) { c -> CourseCard(c) { a -> vm.transition(c, a) } }
             }
-            item { SplitPreview(vm) }
-            item {
-                Section("Payment") {
-                    Button(onClick = vm::choosePaymentMethod, modifier = Modifier.fillMaxWidth()) { Text("Choose payment method") }
-                    choice?.let { c ->
-                        Text(PaymentLabels.method(c), style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.primary)
-                        PaymentLabels.reason(c)?.let {
-                            Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
+            if (selected != null) {
+                item { CheckCard(vm) }
             }
             item { HubPanel(hubUrl, vm::startHub, vm::stopHub) }
         }
@@ -230,27 +219,6 @@ private fun CourseCard(course: CourseEntity, onAction: (CourseAction) -> Unit) {
                         OutlinedButton(onClick = { onAction(CourseAction.RECALL) }) { Text("Recall") }
                     }
                     CourseState.SERVED -> OutlinedButton(onClick = { onAction(CourseAction.RECALL) }) { Text("Undo") }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SplitPreview(vm: PosViewModel) {
-    var ways by remember { mutableIntStateOf(2) }
-    val demoTotal = 10_000L // preview only; real splits come from the check balance
-    Section("Split evenly") {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            FilledTonalButton(onClick = { if (ways > 1) ways-- }, enabled = ways > 1) { Text("−", style = MaterialTheme.typography.titleLarge) }
-            Text("$ways ways", style = MaterialTheme.typography.titleLarge)
-            FilledTonalButton(onClick = { if (ways < 20) ways++ }, enabled = ways < 20) { Text("+", style = MaterialTheme.typography.titleLarge) }
-        }
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(vm.split(demoTotal, ways)) { cents ->
-                Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = MaterialTheme.shapes.small) {
-                    Text("$" + (cents / 100) + "." + (cents % 100).toString().padStart(2, '0'),
-                        style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp))
                 }
             }
         }

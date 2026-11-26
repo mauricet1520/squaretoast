@@ -13,6 +13,9 @@ import com.squaretoast.pos.order.MenuChoice
 import com.squaretoast.pos.order.OptionChoice
 import com.squaretoast.pos.order.OptionGroup
 import com.squaretoast.pos.order.OptionRules
+import com.squaretoast.pos.payment.PaymentMethod
+import com.squaretoast.pos.sync.Bill
+import com.squaretoast.pos.sync.RejectedBatchException
 import kotlinx.coroutines.flow.map
 import com.squaretoast.pos.sync.MenuSync
 import com.squaretoast.pos.data.OrderEntity
@@ -144,7 +147,7 @@ class PosViewModel @Inject constructor(
         }
         if (outcome.isSuccess) {
             OutboxDrainWorker.enqueue(app)
-            selected.value = cart.orderId.toString()
+            select(cart.orderId.toString())
             _cart.value = Cart()
             _table.value = ""
             _ordering.value = false
@@ -192,7 +195,53 @@ class PosViewModel @Inject constructor(
         }
     }
 
-    fun select(orderId: String) { selected.value = orderId }
+    fun select(orderId: String) { selected.value = orderId; _tip.value = 0; loadBill() }
+
+    // ---- The bill (plan 15). The server computes every amount; the POS shows it and picks the tip. ----
+
+    sealed interface BillView {
+        data object None : BillView
+        data object Loading : BillView
+        data object NotSynced : BillView
+        data object Offline : BillView
+        data class Ready(val checkId: UUID, val bill: Bill) : BillView
+    }
+
+    private val _bill = MutableStateFlow<BillView>(BillView.None)
+    val bill: StateFlow<BillView> = _bill.asStateFlow()
+    private val _tip = MutableStateFlow(0L)
+    val tip: StateFlow<Long> = _tip.asStateFlow()
+
+    fun setTip(cents: Long) { if (cents >= 0) _tip.value = cents }
+
+    fun loadBill() = viewModelScope.launch {
+        val checkId = selected.value?.let { orders.checkIdOf(it) }?.let(UUID::fromString)
+        if (checkId == null) { _bill.value = BillView.None; return@launch }
+        _bill.value = BillView.Loading
+        _bill.value = try {
+            BillView.Ready(checkId, cloud.bill(checkId))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: RejectedBatchException) {
+            if (e.status == 404) BillView.NotSynced else BillView.Offline
+        } catch (e: Exception) {
+            BillView.Offline
+        }
+    }
+
+    /** Charges the server's amount due plus the chosen tip, by the best available method. */
+    fun charge() = viewModelScope.launch {
+        val ready = _bill.value as? BillView.Ready ?: return@launch
+        choosePaymentMethod().join()
+        val c = _choice.value ?: return@launch
+        when (c.method) {
+            PaymentMethod.TAP_TO_PAY -> payWithTapToPay(ready.checkId, _tip.value).join()
+            PaymentMethod.BLUETOOTH_READER -> _message.value = "Connect the card reader to charge this check."
+            PaymentMethod.QR_PAY_AT_TABLE -> _message.value = "Ask the guest to scan the table QR to pay." +
+                (PaymentLabels.reason(c)?.let { "\n$it" } ?: "")
+        }
+        loadBill()
+    }
 
     fun transition(course: CourseEntity, action: CourseAction) = viewModelScope.launch {
         runCatching { orders.transitionCourse(UUID.randomUUID(), course.id, action) }

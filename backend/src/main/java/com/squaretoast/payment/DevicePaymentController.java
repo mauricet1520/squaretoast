@@ -10,6 +10,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -38,11 +39,19 @@ class DevicePaymentController {
     private final CheckPaymentService checkPayments;
     private final PaymentGatewayPort gateway;
     private final JdbcClient db;
+    private final CheckBills bills;
 
-    DevicePaymentController(CheckPaymentService checkPayments, PaymentGatewayPort gateway, JdbcClient db) {
+    DevicePaymentController(CheckPaymentService checkPayments, PaymentGatewayPort gateway, JdbcClient db, CheckBills bills) {
         this.checkPayments = checkPayments;
+        this.bills = bills;
         this.gateway = gateway;
         this.db = db;
+    }
+
+    /** The check's bill for this device's own location; another location's check is 404, as if it did not exist. */
+    @GetMapping(path = "/checks/{checkId}/bill", version = "1")
+    ResponseEntity<CheckBills.Bill> bill(@RequestAttribute(DevicePrincipal.ATTRIBUTE) DevicePrincipal device, @PathVariable UUID checkId) {
+        return ResponseEntity.ok(bills.bill(checkId, device.locationId()));
     }
 
     @PostMapping(path = "/checks/{checkId}/payments", version = "1")

@@ -87,7 +87,8 @@ class CloudApi(
     }
 
     /** The check's bill as the server computes it. 404 (RejectedBatchException) until the order has synced. */
-    suspend fun bill(checkId: UUID): Bill = TODO("Slice 10")
+    suspend fun bill(checkId: UUID): Bill =
+        http.get(baseUrl + "/api/v1/checks/$checkId/bill") { authenticate() }.checked().body()
 
     suspend fun connectionToken(): String = post("/api/v1/terminal/connection_token", Unit).body<ConnectionToken>().secret
 

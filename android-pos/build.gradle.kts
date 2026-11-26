@@ -37,6 +37,16 @@ android {
     sourceSets["test"].resources.directories.add(rootProject.file("shared-test-vectors").path)
     // Exported Room schemas, so migration tests can build each old version exactly.
     sourceSets["test"].resources.directories.add(file("schemas").path)
+
+    // Local device testing, debug builds only: -Psquaretoast.localCloudUrl=https://localhost:8443 points the POS at a
+    // backend on this computer (reached over `adb reverse`) and trusts the local CA from scripts/local-dev. Release
+    // builds never see this: they keep the production URL and the system trust store.
+    providers.gradleProperty("squaretoast.localCloudUrl").orNull?.let { url ->
+        require(url.startsWith("https://")) { "the cloud API is https only" }
+        buildTypes["debug"].buildConfigField("String", "CLOUD_BASE_URL", "\"$url\"")
+        sourceSets["debug"].manifest.srcFile("local-dev/AndroidManifest.xml")
+        sourceSets["debug"].res.directories.add(file("local-dev/res").path)
+    }
 }
 
 kotlin { jvmToolchain(21) }

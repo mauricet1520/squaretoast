@@ -22,6 +22,8 @@ export type StreamOptions = {
   onStatus?: (connected: boolean) => void;
   /** Resume after this seq, e.g. the seq the board snapshot was taken at. */
   from?: number | null;
+  /** Called when fetching a ticket fails; return true to stop for good (e.g. 401: the device was revoked). */
+  giveUp?: (err: unknown) => boolean;
 };
 
 const FIRST_DELAY = 1000;
@@ -55,8 +57,13 @@ export class ReconnectingStream {
     let ticket: string;
     try {
       ticket = await this.opts.ticket();
-    } catch {
-      this.retry();
+    } catch (err) {
+      if (this.opts.giveUp?.(err)) {
+        this.stop();
+        this.opts.onStatus?.(false);
+      } else {
+        this.retry();
+      }
       return;
     }
     if (this.stopped) {

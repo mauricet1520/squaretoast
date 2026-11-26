@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds with -Psquaretoast.localCloudUrl only. HTTPS stays mandatory; only localhost also trusts the
+     local CA that scripts/local-dev/make-cert.sh generates (it is gitignored and never shipped). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">localhost</domain>
+        <trust-anchors>
+            <certificates src="@raw/local_dev_ca" />
+        </trust-anchors>
+    </domain-config>
+</network-security-config>

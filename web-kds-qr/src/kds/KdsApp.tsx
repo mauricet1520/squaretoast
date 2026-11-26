@@ -124,6 +124,12 @@ function Kitchen({ mode, onSignedOut }: { mode: Mode; onSignedOut: () => void })
           url: (ticket, last) => `/api/v1/kds/stream?ticket=${encodeURIComponent(ticket)}${last === null ? '' : `&lastEventId=${last}`}`,
           open: (url) => new EventSource(url),
           topics: ['course', 'order'],
+          // A revoked or re-enrolled display gets 401 for its ticket: sign out instead of retrying forever.
+          giveUp: (err) => {
+            const revoked = err instanceof ApiError && err.status === 401;
+            if (revoked && !cancelled) onSignedOut();
+            return revoked;
+          },
           onEvent: (topic, seq, data) => {
             if (topic === 'course') onCourse(seq, data as Ticket);
             if (topic === 'order') {

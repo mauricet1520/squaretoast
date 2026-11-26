@@ -47,7 +47,8 @@ data class OrderLineEntity(
     val unitPriceCents: Long,
 )
 
-enum class OutboxState { PENDING, INFLIGHT, DONE, CONFLICT }
+/** ACKNOWLEDGED: a CONFLICT a person has seen; kept for the record, never resent. */
+enum class OutboxState { PENDING, INFLIGHT, DONE, CONFLICT, ACKNOWLEDGED }
 
 /** One local command awaiting the cloud. mutationId is the server's dedupe key; deviceSeq is the send order. */
 @Entity(tableName = "outbox", indices = [Index(value = ["deviceSeq"], unique = true), Index("state")])

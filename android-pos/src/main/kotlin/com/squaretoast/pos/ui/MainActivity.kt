@@ -100,11 +100,18 @@ private fun PosScreen(vm: PosViewModel) {
     val choice by vm.choice.collectAsState()
     val hubUrl by vm.hubUrl.collectAsState()
 
-    if (conflicts.isNotEmpty()) {
-        // A server CONFLICT (e.g. OVERSOLD) blocks until a person has seen it; it is never dropped silently.
-        AlertDialog(onDismissRequest = {}, confirmButton = {},
-            title = { Text("Sync conflict") },
-            text = { Text(conflicts.joinToString("\n") { "${it.type}: ${it.lastError ?: "rejected"}" }) })
+    conflicts.firstOrNull()?.let { row ->
+        // A refused change (e.g. OVERSOLD) blocks until a person has seen it and tapped OK; never dropped silently.
+        val table = orders.firstOrNull { it.id == row.aggregateId }?.tableLabel
+        AlertDialog(
+            onDismissRequest = {},
+            confirmButton = { TextButton(onClick = { vm.acknowledge(row.mutationId) }) { Text("OK") } },
+            title = { Text("Not sent to the kitchen") },
+            text = {
+                Text(ConflictLabels.describe(row, table) +
+                    if (row.type == "ORDER_PLACED") " It will be removed from this phone. Ring it up again if needed." else "")
+            },
+        )
     }
     message?.let { MessageDialog(it, vm::dismissMessage) }
 

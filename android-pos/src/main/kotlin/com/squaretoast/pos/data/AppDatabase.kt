@@ -24,6 +24,9 @@ interface OrderDao {
     @Query("select * from course where id = :id") suspend fun course(id: String): CourseEntity?
     @Query("update course set state = :state where id = :id") suspend fun setCourseState(id: String, state: CourseState)
     @Query("select * from orders order by createdAt desc") fun observeOrders(): Flow<List<OrderEntity>>
+    @Query("delete from order_line where orderId = :orderId") suspend fun deleteLines(orderId: String)
+    @Query("delete from course where orderId = :orderId") suspend fun deleteCourses(orderId: String)
+    @Query("delete from orders where id = :id") suspend fun deleteOrder(id: String)
 }
 
 @Dao
@@ -38,6 +41,10 @@ interface OutboxDao {
     @Query("update outbox set state = 'PENDING', attempts = attempts + 1, lastError = :error where mutationId in (:ids)")
     suspend fun releaseForRetry(ids: List<String>, error: String?)
     @Query("update outbox set state = 'PENDING' where state = 'INFLIGHT'") suspend fun resetInflight()
+    @Query("select * from outbox where mutationId = :id") suspend fun get(id: String): OutboxEntity?
+    @Query("update outbox set state = 'ACKNOWLEDGED' where mutationId = :id and state = 'CONFLICT'") suspend fun acknowledge(id: String)
+    @Query("update outbox set state = 'ACKNOWLEDGED' where aggregateId = :aggregateId and state in ('PENDING', 'CONFLICT')")
+    suspend fun acknowledgeAggregate(aggregateId: String)
     @Query("select * from outbox where state = 'CONFLICT' order by deviceSeq") fun conflicts(): Flow<List<OutboxEntity>>
 }
 

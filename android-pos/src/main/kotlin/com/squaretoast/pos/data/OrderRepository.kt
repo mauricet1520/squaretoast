@@ -98,7 +98,18 @@ class OrderRepository(private val db: AppDatabase, private val clock: Clock) {
      * Staff tapped OK on a sync conflict. The row is kept as ACKNOWLEDGED. If the server refused a whole order,
      * the order is removed from this phone, and its unsent changes are acknowledged too, since they can never apply.
      */
-    suspend fun acknowledgeConflict(mutationId: String): Unit = TODO("conflict OK")
+    suspend fun acknowledgeConflict(mutationId: String) = db.withTransaction {
+        val row = db.outboxDao().get(mutationId)
+        if (row == null || row.state != OutboxState.CONFLICT) return@withTransaction
+        if (row.type == "ORDER_PLACED") {
+            db.outboxDao().acknowledgeAggregate(row.aggregateId)
+            db.orderDao().deleteLines(row.aggregateId)
+            db.orderDao().deleteCourses(row.aggregateId)
+            db.orderDao().deleteOrder(row.aggregateId)
+        } else {
+            db.outboxDao().acknowledge(mutationId)
+        }
+    }
 
     /** The check ID to sign an offline claim with, so the claim and the synced check are the same check. */
     suspend fun checkIdOf(orderId: String): String? = db.orderDao().order(orderId)?.checkId

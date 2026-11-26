@@ -114,6 +114,12 @@ class PosViewModel @Inject constructor(
 
     fun closeOptions() { _sheet.value = null }
 
+    /** Staff saw a refused change and tapped OK. */
+    fun acknowledge(mutationId: String) = viewModelScope.launch {
+        orders.acknowledgeConflict(mutationId)
+        if (db.orderDao().order(selected.value ?: "") == null) selected.value = null
+    }
+
     fun add(item: MenuItemEntity, seat: Int, course: Int) {
         val choice = MenuChoice(item.id, item.name, item.priceCents, item.available, item.needsOptions)
         if (_cart.value.canAdd(choice)) _cart.value = _cart.value.add(choice, seat, course)

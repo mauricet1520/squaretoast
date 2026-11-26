@@ -86,6 +86,9 @@ class CloudApi(
         return http.get(baseUrl + "/api/v1/locations/$locationId/menu") { authenticate() }.checked().body()
     }
 
+    /** The check's bill as the server computes it. 404 (RejectedBatchException) until the order has synced. */
+    suspend fun bill(checkId: UUID): Bill = TODO("Slice 10")
+
     suspend fun connectionToken(): String = post("/api/v1/terminal/connection_token", Unit).body<ConnectionToken>().secret
 
     suspend fun startCardPayment(checkId: UUID, idempotencyKey: UUID, method: String, tipCents: Long): StartedCardPayment {
@@ -110,3 +113,20 @@ class CloudApi(
         setBody(body)
     }.checked()
 }
+
+@Serializable
+data class BillLine(val name: String, val qty: Int, val modifiers: List<String> = emptyList(), val amountCents: Long)
+
+/** The server's bill for a check; the POS only displays it. */
+@Serializable
+data class Bill(
+    val checkId: String,
+    val status: String,
+    val currency: String,
+    val subtotalCents: Long,
+    val serviceChargeCents: Long,
+    val taxCents: Long,
+    val paidCents: Long,
+    val dueCents: Long,
+    val lines: List<BillLine>,
+)

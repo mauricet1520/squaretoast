@@ -257,6 +257,10 @@ public final class DeviceFixture {
                 .query(UUID.class).single();
     }
 
+    public HttpResponse<String> bill(@Nullable String token, UUID check) {
+        return send("GET", "/checks/" + check + "/bill", null, token);
+    }
+
     public HttpResponse<String> board(@Nullable String token) {
         return send("GET", "/kds/board", null, token);
     }

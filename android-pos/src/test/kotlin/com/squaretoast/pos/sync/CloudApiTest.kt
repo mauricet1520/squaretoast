@@ -146,4 +146,30 @@ class CloudApiTest {
         assertEquals(listOf("Medium", "Rare"), group.options.map { it.name })
         assertEquals(listOf(true, false), group.options.map { it.available })
     }
+
+    @Test
+    fun billReadsTheCheckWithTheDeviceToken() = runBlocking {
+        val check = UUID.fromString("00000000-0000-0000-0000-0000000000c1")
+        val api = api("tok") {
+            json("""{"checkId":"$check","status":"OPEN","currency":"USD","subtotalCents":4000,"serviceChargeCents":0,
+                "taxCents":290,"paidCents":0,"dueCents":4290,"lines":[{"name":"Burger","qty":2,"modifiers":["Medium"],"amountCents":3000}]}""")
+        }
+
+        val bill = api.bill(check)
+
+        val req = requests.single()
+        assertEquals("https://api.test/api/v1/checks/$check/bill", req.url.toString())
+        assertEquals("GET", req.method.value)
+        assertEquals("Bearer tok", req.headers[HttpHeaders.Authorization])
+        assertEquals(4290L, bill.dueCents)
+        assertEquals(290L, bill.taxCents)
+        assertEquals(listOf("Medium"), bill.lines.single().modifiers)
+    }
+
+    @Test
+    fun aBillForAnOrderNotYetSyncedIsA404() {
+        val api = api("tok") { json("{}", HttpStatusCode.NotFound) }
+        val e = assertThrows(RejectedBatchException::class.java) { runBlocking { api.bill(UUID.randomUUID()) } }
+        assertEquals(404, e.status)
+    }
 }

@@ -243,4 +243,35 @@ class CheckPaymentIT {
         d.terminalLocation(loc, null);
         assertThat(d.connectionToken(pos.token()).statusCode()).isEqualTo(409);
     }
+
+    // ------------------------------------------------------------------ the bill on the POS (Slice 10)
+
+    @Test
+    void aDeviceReadsItsOwnChecksBillAsTheServerComputesIt() {
+        UUID check = placeOrder(UUID.randomUUID());
+
+        HttpResponse<String> r = d.bill(pos.token(), check);
+
+        assertThat(r.statusCode()).isEqualTo(200);
+        var b = body(r);
+        assertThat(b.get("checkId").asString()).isEqualTo(check.toString());
+        assertThat(b.get("status").asString()).isEqualTo("OPEN");
+        assertThat(b.get("currency").asString()).isEqualTo("USD");
+        assertThat(b.get("subtotalCents").asLong()).isEqualTo(4000);
+        assertThat(b.get("taxCents").asLong()).isEqualTo(290);
+        assertThat(b.get("paidCents").asLong()).isZero();
+        assertThat(b.get("dueCents").asLong()).isEqualTo(4290); // what a no-tip payment would charge
+        assertThat(b.get("lines")).hasSize(2);
+    }
+
+    @Test
+    void anotherLocationsCheckOrAnUnknownCheckIsNotFound() {
+        UUID check = placeOrder(UUID.randomUUID());
+        UUID elsewhere = p.location(15, 5, 290, 30);
+        Device other = d.enrolledDevice(elsewhere);
+
+        assertThat(d.bill(other.token(), check).statusCode()).isEqualTo(404);
+        assertThat(d.bill(pos.token(), UUID.randomUUID()).statusCode()).isEqualTo(404);
+        assertThat(d.bill(null, check).statusCode()).isEqualTo(401);
+    }
 }

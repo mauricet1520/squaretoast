@@ -30,6 +30,7 @@ import android.os.Build
 import com.squaretoast.pos.sync.OutboxDrainWorker
 import com.squaretoast.pos.terminal.TerminalSession
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -92,8 +93,15 @@ class PosViewModel @Inject constructor(
         if (location == null) { _message.value = "Menu not loaded yet. Connect to the internet once to load it."; return@launch }
         _sending.value = true
         val cart = _cart.value
-        val outcome = runCatching { orders.placeOrderOnce(cart.toPlaceOrder(_table.value, UUID.fromString(location))) }
-        _sending.value = false
+        val outcome = try {
+            Result.success(orders.placeOrderOnce(cart.toPlaceOrder(_table.value, UUID.fromString(location))))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        } finally {
+            _sending.value = false
+        }
         if (outcome.isSuccess) {
             OutboxDrainWorker.enqueue(app)
             selected.value = cart.orderId.toString()

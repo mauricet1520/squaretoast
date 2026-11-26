@@ -763,3 +763,24 @@ So this slice is Android only.
 - `./gradlew :android-pos:testDebugUnitTest :android-pos:lintDebug`
 - On the Fold5: place an order for T1 and see it on the browser KDS.
 - Turn Wi-Fi off, place an order, turn it back on, and see it sync.
+
+### 13.1 Results and changes from the plan (2026-11-26)
+
+**Changes:**
+- **Where the IDs live.** `mutationId` and `orderId` live inside `Cart` and don't change across edits. `toPlaceOrder(table, locationId)` reuses them, so there's no separate ids argument.
+- **Send-once test.** It sits in `OrderOutboxTest` (`placeOrderOnce`) rather than a `PosViewModelSendTest`, because a Hilt `AndroidViewModel` isn't unit-testable as it stands. The view model also guards double taps with a `sending` flag.
+- **Courses.** `Cart` only requires course ≥ 1. The 1..3 limit is in the UI (Starter / Main / Dessert).
+- **Menu refresh.** It runs on enrollment, each time the POS comes back to the front (ON_RESUME), and when a new order starts. Refreshing "after any 86 event" waits until the POS has a live event stream; until then, the server still refuses oversold items at sync, and the conflict dialog shows it.
+- **Location ID check.** `CloudApi.menu` checks the location ID with `[A-Za-z0-9-]{1,64}` before putting it in the URL path. The ID comes from `/devices/me`, never from the screen.
+
+**Verified on the Fold5:**
+- The menu loaded from the local backend.
+- I rang up T1: 2× Burger in course 1 and 1× Fries in course 2, an estimate of $34.50.
+- The server shows the order COMMITTED with 3 items and 2 courses.
+- After firing course 1 on the POS, it appeared on the browser KDS as "T1 Course 1 · 2× Burger · Cooking".
+
+**Not verified:**
+- Placing an order with Wi-Fi off and seeing it sync later.
+- The unfolded inner-screen grid.
+
+**Audit:** no High findings. I fixed both Medium findings: the stale-menu banner and the refresh on resume. I also fixed the Low cancellation finding in `send`.

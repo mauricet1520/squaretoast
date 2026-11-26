@@ -1,6 +1,9 @@
 package com.squaretoast.pos.ui
 
+import android.text.format.DateFormat
 import androidx.activity.compose.BackHandler
+import androidx.compose.ui.platform.LocalContext
+import java.util.Date
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -130,11 +133,19 @@ fun OrderEntryScreen(vm: PosViewModel) {
                     }
                 }
             }
-            if (meta == null) {
+            val fetchedAt = meta?.fetchedAt
+            val stale = fetchedAt != null && System.currentTimeMillis() - fetchedAt > 60 * 60 * 1000
+            if (fetchedAt == null || stale) {
                 item {
                     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
                         Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text("Menu not loaded. Connect to the internet once to load it.", Modifier.weight(1f))
+                            val text = if (fetchedAt == null) {
+                                "Menu not loaded. Connect to the internet once to load it."
+                            } else {
+                                "Menu last updated " + DateFormat.getTimeFormat(LocalContext.current).format(Date(fetchedAt)) +
+                                    ". Sold-out items may have changed."
+                            }
+                            Text(text, Modifier.weight(1f))
                             TextButton(onClick = vm::refreshMenu) { Text("Retry") }
                         }
                     }

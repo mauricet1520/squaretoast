@@ -7,6 +7,9 @@ import androidx.test.core.app.ApplicationProvider
 import com.squaretoast.pos.domain.CourseAction
 import com.squaretoast.pos.domain.CourseState
 import com.squaretoast.pos.domain.IllegalCourseTransitionException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
@@ -14,6 +17,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -153,5 +157,26 @@ class OrderOutboxTest {
         }
         assertEquals(CourseState.FIRED, db.orderDao().course(course.id)!!.state)
         assertEquals(2, db.outboxDao().all().size)
+    }
+
+    @Test
+    fun sendingTheSameCartTwiceWritesOneOrderAndOneOutboxRow() = runBlocking {
+        val cmd = order()
+
+        assertTrue(repo.placeOrderOnce(cmd))
+        assertFalse(repo.placeOrderOnce(cmd))
+
+        assertEquals(1, db.outboxDao().all().size)
+        assertEquals(2, db.orderDao().lines(cmd.orderId.toString()).size)
+    }
+
+    @Test
+    fun aDoubleTapAtTheSameMomentStillPlacesOneOrder() = runBlocking {
+        val cmd = order()
+
+        val placed = (1..4).map { async(Dispatchers.IO) { repo.placeOrderOnce(cmd) } }.awaitAll()
+
+        assertEquals(1, placed.count { it })
+        assertEquals(1, db.outboxDao().all().size)
     }
 }

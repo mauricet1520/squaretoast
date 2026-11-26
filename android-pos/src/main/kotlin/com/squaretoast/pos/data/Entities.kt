@@ -62,3 +62,24 @@ data class OutboxEntity(
     val state: OutboxState = OutboxState.PENDING,
     val lastError: String? = null,
 )
+
+/** The location's menu as last fetched, so orders can be taken offline. Prices here are for display only. */
+@Entity(tableName = "menu_item")
+data class MenuItemEntity(
+    @PrimaryKey val id: String,
+    val name: String,
+    val priceCents: Long,
+    val currency: String,
+    val available: Boolean,
+    /** Has a modifier group the guest must choose from; such items can't be rung up until modifiers exist. */
+    val needsOptions: Boolean,
+    val position: Int,
+)
+
+/** One row: which location the snapshot belongs to and when it was fetched. */
+@Entity(tableName = "menu_meta")
+data class MenuMetaEntity(
+    @PrimaryKey val id: Int = 0,
+    val locationId: String,
+    val fetchedAt: Long,
+)

@@ -109,4 +109,23 @@ class CloudApiTest {
             CloudApi("http://api.test", HttpClient(MockEngine { respond("") })) { "tok" }
         }
     }
+
+    @Test
+    fun menuIsTheDevicesOwnLocationWithItsToken() = runBlocking {
+        val api = api("tok") {
+            json("""{"items":[{"id":"i-1","name":"Burger","priceCents":1299,"currency":"USD","available":false,
+                "modifierGroups":[{"id":"g-1","name":"Cook","minSelect":1,"maxSelect":1,"options":[]}]}]}""")
+        }
+
+        val menu = api.menu("l-1")
+
+        val req = requests.single()
+        assertEquals("https://api.test/api/v1/locations/l-1/menu", req.url.toString())
+        assertEquals("GET", req.method.value)
+        assertEquals("Bearer tok", req.headers[HttpHeaders.Authorization])
+        val item = menu.items.single()
+        assertEquals(1299L, item.priceCents)
+        assertEquals(false, item.available)
+        assertEquals(1, item.modifierGroups.single().minSelect)
+    }
 }

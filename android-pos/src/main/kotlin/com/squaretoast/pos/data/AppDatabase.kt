@@ -42,13 +42,17 @@ interface OutboxDao {
 }
 
 @Database(
-    entities = [OrderEntity::class, CourseEntity::class, OrderLineEntity::class, OutboxEntity::class],
-    version = 2,
+    entities = [
+        OrderEntity::class, CourseEntity::class, OrderLineEntity::class, OutboxEntity::class,
+        MenuItemEntity::class, MenuMetaEntity::class,
+    ],
+    version = 3,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun orderDao(): OrderDao
     abstract fun outboxDao(): OutboxDao
+    abstract fun menuDao(): MenuDao
 
     companion object {
         /** v2: orders carry the check ID the POS sends with ORDER_PLACED (plan S7-1). */
@@ -58,6 +62,13 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        val MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2)
+        /** v3: the menu snapshot for offline order entry (plan 13). Adds tables only. */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                TODO("Slice 8")
+            }
+        }
+
+        val MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
     }
 }

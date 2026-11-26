@@ -57,7 +57,7 @@ class CloudApi(
     private val deviceCredential: () -> String?,
     /** Called with the token we sent when the cloud answers 401 to it: the device was revoked or re-enrolled. */
     private val onRejectedCredential: (String) -> Unit,
-) : SyncApi {
+) : SyncApi, MenuApi {
 
     constructor(baseUrl: String, engine: HttpClient, deviceCredential: () -> String?) :
         this(baseUrl, engine, deviceCredential, { _ -> })
@@ -75,11 +75,13 @@ class CloudApi(
             setBody(EnrollRequest(code, Base64.getEncoder().encodeToString(publicKeySpki), label))
         }.also { if (!it.status.isSuccess()) throw RejectedBatchException(it.status.value) }.body()
 
-    suspend fun me(): DeviceInfo =
+    override suspend fun me(): DeviceInfo =
         http.get(baseUrl + "/api/v1/devices/me") { authenticate() }.checked().body()
 
     override suspend fun push(batch: List<Mutation>): List<MutationResult> =
         post("/api/v1/sync/mutations", MutationBatch(batch)).body<MutationResults>().results
+
+    override suspend fun menu(locationId: String): MenuDto = TODO("Slice 8")
 
     suspend fun connectionToken(): String = post("/api/v1/terminal/connection_token", Unit).body<ConnectionToken>().secret
 

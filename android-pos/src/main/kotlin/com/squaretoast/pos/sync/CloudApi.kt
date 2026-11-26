@@ -81,7 +81,10 @@ class CloudApi(
     override suspend fun push(batch: List<Mutation>): List<MutationResult> =
         post("/api/v1/sync/mutations", MutationBatch(batch)).body<MutationResults>().results
 
-    override suspend fun menu(locationId: String): MenuDto = TODO("Slice 8")
+    override suspend fun menu(locationId: String): MenuDto {
+        require(locationId.matches(Regex("[A-Za-z0-9-]{1,64}"))) { "not a location id" } // it goes into the path
+        return http.get(baseUrl + "/api/v1/locations/$locationId/menu") { authenticate() }.checked().body()
+    }
 
     suspend fun connectionToken(): String = post("/api/v1/terminal/connection_token", Unit).body<ConnectionToken>().secret
 

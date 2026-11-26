@@ -84,7 +84,12 @@ class OrderRepository(private val db: AppDatabase, private val clock: Clock) {
      * Places the order unless one with this orderId is already on the device. True if this call placed it. Safe
      * to call again after a double tap or a crash mid-send.
      */
-    suspend fun placeOrderOnce(cmd: PlaceOrder): Boolean = TODO("Slice 8")
+    suspend fun placeOrderOnce(cmd: PlaceOrder): Boolean = db.withTransaction {
+        // Room transactions are exclusive, so the check and the insert are one step even across repository instances.
+        if (db.orderDao().order(cmd.orderId.toString()) != null) return@withTransaction false
+        placeOrder(cmd)
+        true
+    }
 
     /** The check ID to sign an offline claim with, so the claim and the synced check are the same check. */
     suspend fun checkIdOf(orderId: String): String? = db.orderDao().order(orderId)?.checkId

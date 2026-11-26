@@ -65,7 +65,15 @@ abstract class AppDatabase : RoomDatabase() {
         /** v3: the menu snapshot for offline order entry (plan 13). Adds tables only. */
         val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                TODO("Slice 8")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `menu_item` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, " +
+                        "`priceCents` INTEGER NOT NULL, `currency` TEXT NOT NULL, `available` INTEGER NOT NULL, " +
+                        "`needsOptions` INTEGER NOT NULL, `position` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `menu_meta` (`id` INTEGER NOT NULL, `locationId` TEXT NOT NULL, " +
+                        "`fetchedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+                )
             }
         }
 

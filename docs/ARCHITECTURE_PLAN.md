@@ -706,3 +706,60 @@ Still open (Low):
 - 155 backend integration tests pass.
 - 78 Android unit tests pass.
 - Android lint passes.
+
+---
+
+## 13. Slice 8 — POS order entry from a menu snapshot (pending approval)
+
+**Goal.** A server can ring up a table on the POS: pick a table, tap menu items into a cart by seat and course, and send it. The order goes through the existing outbox and shows up on the KDS. It works offline from the last menu snapshot.
+
+**Already there:**
+- `GET /api/v1/locations/{id}/menu` (device auth, with 86 state)
+- `OrderRepository.placeOrder` (order + outbox in one Room transaction)
+- `MutationApplier` prices lines on the server
+
+So this slice is Android only.
+
+**Out of scope:**
+- Modifiers: the sync `Line` has none. Items with a required modifier group (`minSelect > 0`) show "Needs options" and can't be added; that's the next slice.
+- Editing an order after it is sent.
+- A table list from the server: the table is typed or picked from recent tables.
+
+**Design**
+
+1. **Menu snapshot in Room (DB v3).**
+   - Add `menu_item` (id, name, priceCents, currency, available, needsOptions, position) and a `menu_meta` row (locationId, fetchedAt).
+   - `MIGRATION_2_3` adds the tables only. Existing rows are untouched.
+2. **`MenuSync`.**
+   - Calls `CloudApi.menu(locationId)` on start, on resume, and after any 86 event.
+   - Replaces the snapshot in one transaction. On any failure it keeps the old snapshot.
+   - A 404 or another location's menu is never stored.
+3. **`Cart` (pure Kotlin, no Android).**
+   - Lines keyed by (menuItemId, seat, course): `add`, `remove`, `setQty`.
+   - Seats start at 1 and courses at 1..3. Unavailable or needs-options items are refused.
+   - `subtotalCents` (long) is a display estimate only; the server prices the check.
+   - `toPlaceOrder(table, locationId, ids)` builds the command.
+4. **Sending.** `PosViewModel.send()` uses one `mutationId` and one `orderId` per cart, made when the cart is created. A double tap or retry therefore can't make two orders. On success it clears the cart, selects the new order and kicks `OutboxDrainWorker`.
+5. **UI (M3).**
+   - A "New order" FAB opens a full-screen sheet with:
+     - a table field with recent-table chips
+     - seat and course segmented buttons
+     - a menu grid (sold-out items greyed with a "86" badge)
+     - a cart list with − / + controls
+     - a bottom bar: "Send · $12.50 est."
+   - A banner shows when the menu is older than 1 h or missing ("Menu not loaded — connect once to load it").
+
+**First failing tests**
+
+| Test | Checks |
+|---|---|
+| `AppDatabaseMigrationTest.v2ToV3KeepsOrdersAndAddsMenu` | v2 rows survive; the menu tables exist |
+| `MenuSyncTest` | snapshot replaced on success; kept on network error and on 401; never stored for another location |
+| `CartTest` | same item/seat/course merges qty; qty 0 removes; refuses 86'd and needs-options items; subtotal in long cents; empty cart can't build an order |
+| `CartTest.toPlaceOrderKeepsSeatAndCourse` | `NewLine`s carry seat, course and qty; same ids on every call |
+| `PosViewModelSendTest` | sending twice writes one order + one outbox row; cart cleared after |
+
+**Verification:**
+- `./gradlew :android-pos:testDebugUnitTest :android-pos:lintDebug`
+- On the Fold5: place an order for T1 and see it on the browser KDS.
+- Turn Wi-Fi off, place an order, turn it back on, and see it sync.

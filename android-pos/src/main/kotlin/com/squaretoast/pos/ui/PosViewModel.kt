@@ -10,6 +10,10 @@ import com.squaretoast.pos.data.MenuMetaEntity
 import com.squaretoast.pos.order.Cart
 import com.squaretoast.pos.order.CartLine
 import com.squaretoast.pos.order.MenuChoice
+import com.squaretoast.pos.order.OptionChoice
+import com.squaretoast.pos.order.OptionGroup
+import com.squaretoast.pos.order.OptionRules
+import kotlinx.coroutines.flow.map
 import com.squaretoast.pos.sync.MenuSync
 import com.squaretoast.pos.data.OrderEntity
 import com.squaretoast.pos.data.OrderRepository
@@ -80,11 +84,41 @@ class PosViewModel @Inject constructor(
     fun startOrder(table: String = "") { _table.value = table; _ordering.value = true; refreshMenu() }
     fun closeOrder() { _ordering.value = false }
     fun setTable(label: String) { _table.value = label.take(24) }
+    /** Items that have option groups open the options sheet; the rest go straight into the cart. */
+    val itemsWithOptions: StateFlow<Set<String>> = db.menuDao().observeItemsWithOptions().map { it.toSet() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    data class OptionSheet(val item: MenuItemEntity, val groups: List<OptionGroup>, val seat: Int, val course: Int)
+    private val _sheet = MutableStateFlow<OptionSheet?>(null)
+    val sheet: StateFlow<OptionSheet?> = _sheet.asStateFlow()
+
+    fun tap(item: MenuItemEntity, seat: Int, course: Int) = viewModelScope.launch {
+        if (!item.available) return@launch
+        val groups = db.menuDao().groupsFor(item.id)
+        if (groups.isEmpty()) { add(item, seat, course); return@launch }
+        val options = db.menuDao().optionsFor(groups.map { it.id }).groupBy { it.groupId }
+        _sheet.value = OptionSheet(item, groups.map { g ->
+            OptionGroup(g.id, g.name, g.minSelect, g.maxSelect,
+                options[g.id].orEmpty().map { OptionChoice(it.id, it.name, it.priceDeltaCents, it.available) })
+        }, seat, course)
+    }
+
+    fun addWithOptions(chosenIds: List<String>) {
+        val s = _sheet.value ?: return
+        val choice = MenuChoice(s.item.id, s.item.name, s.item.priceCents, s.item.available, s.item.needsOptions)
+        if (OptionRules.problems(s.groups, chosenIds).isEmpty()) {
+            _cart.value = _cart.value.addWithOptions(choice, s.seat, s.course, s.groups, chosenIds)
+            _sheet.value = null
+        }
+    }
+
+    fun closeOptions() { _sheet.value = null }
+
     fun add(item: MenuItemEntity, seat: Int, course: Int) {
         val choice = MenuChoice(item.id, item.name, item.priceCents, item.available, item.needsOptions)
         if (_cart.value.canAdd(choice)) _cart.value = _cart.value.add(choice, seat, course)
     }
-    fun setQuantity(line: CartLine, qty: Int) { _cart.value = _cart.value.setQuantity(line.menuItemId, line.seat, line.course, qty) }
+    fun setQuantity(line: CartLine, qty: Int) { _cart.value = _cart.value.setQuantity(line, qty) }
 
     /** Saves the order on this phone and queues it for the cloud; works offline. The cart's IDs make a retry harmless. */
     fun send() = viewModelScope.launch {

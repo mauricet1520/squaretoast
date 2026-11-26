@@ -63,6 +63,9 @@ fun OrderEntryScreen(vm: PosViewModel) {
     val table by vm.table.collectAsState()
     val sending by vm.sending.collectAsState()
     val orders by vm.openOrders.collectAsState()
+    val withOptions by vm.itemsWithOptions.collectAsState()
+    val sheet by vm.sheet.collectAsState()
+    sheet?.let { OptionsSheet(it, onAdd = vm::addWithOptions, onDismiss = vm::closeOptions) }
     var seat by remember { mutableIntStateOf(1) }
     var course by remember { mutableIntStateOf(1) }
     val columns = if (LocalConfiguration.current.screenWidthDp >= 600) 4 else 2 // unfolded Fold or tablet: wider grid
@@ -153,13 +156,15 @@ fun OrderEntryScreen(vm: PosViewModel) {
             }
             items(menu.chunked(columns)) { row ->
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    row.forEach { item -> MenuTile(item, Modifier.weight(1f)) { vm.add(item, seat, course) } }
+                    row.forEach { item ->
+                        MenuTile(item, item.id in withOptions, Modifier.weight(1f)) { vm.tap(item, seat, course) }
+                    }
                     repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
             if (cart.lines.isNotEmpty()) {
                 item { Text("This order", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 8.dp)) }
-                items(cart.lines.sortedWith(compareBy({ it.course }, { it.seat })), key = { "${it.menuItemId}/${it.seat}/${it.course}" }) { line ->
+                items(cart.lines.sortedWith(compareBy({ it.course }, { it.seat })), key = { "${it.menuItemId}/${it.seat}/${it.course}/" + it.options.joinToString(",") { o -> o.id } }) { line ->
                     CartRow(line, onQty = { vm.setQuantity(line, it) })
                 }
             }
@@ -168,8 +173,8 @@ fun OrderEntryScreen(vm: PosViewModel) {
 }
 
 @Composable
-private fun MenuTile(item: MenuItemEntity, modifier: Modifier, onAdd: () -> Unit) {
-    val enabled = item.available && !item.needsOptions
+private fun MenuTile(item: MenuItemEntity, hasOptions: Boolean, modifier: Modifier, onAdd: () -> Unit) {
+    val enabled = item.available
     Card(
         onClick = onAdd, enabled = enabled, modifier = modifier.heightIn(min = 88.dp),
         colors = CardDefaults.cardColors(
@@ -182,7 +187,8 @@ private fun MenuTile(item: MenuItemEntity, modifier: Modifier, onAdd: () -> Unit
             Text(money(item.priceCents), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
             when {
                 !item.available -> Badge("86'd", MaterialTheme.colorScheme.errorContainer, MaterialTheme.colorScheme.onErrorContainer)
-                item.needsOptions -> Badge("Needs options", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant)
+                item.needsOptions -> Badge("Choose options", MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer)
+                hasOptions -> Badge("Options", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
@@ -201,6 +207,10 @@ private fun CartRow(line: CartLine, onQty: (Int) -> Unit) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(line.name, style = MaterialTheme.typography.titleSmall)
+                if (line.options.isNotEmpty()) {
+                    Text(line.options.joinToString(", ") { it.name }, style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary)
+                }
                 Text("Seat ${line.seat} · Course ${line.course} · ${money(line.totalCents)}",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }

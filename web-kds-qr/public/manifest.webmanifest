@@ -4,6 +4,6 @@
   "start_url": "/kds",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#0b1120",
-  "theme_color": "#111827"
+  "background_color": "#f4fbf8",
+  "theme_color": "#006a60"
 }

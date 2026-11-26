@@ -109,4 +109,43 @@ describe('KDS stream', () => {
     h.sources[0]?.listeners.get('course')?.({ data: '{}', lastEventId: 'x' });
     expect(h.got).toEqual([]);
   });
+
+  it('gives up for good when the ticket is refused, e.g. the device was revoked', async () => {
+    const timers: { fn: () => void; ms: number }[] = [];
+    const opened: string[] = [];
+    const refused: unknown[] = [];
+    const revoked = Object.assign(new Error('unauthorized'), { status: 401 });
+    const stream = new ReconnectingStream({
+      ticket: async () => { throw revoked; },
+      url: (t) => t,
+      open: (url) => { opened.push(url); return new FakeSource(url); },
+      topics: ['course'],
+      onEvent: () => {},
+      schedule: (fn, ms) => timers.push({ fn, ms }),
+      giveUp: (err) => { refused.push(err); return (err as { status?: number }).status === 401; },
+    });
+
+    await stream.start();
+
+    expect(refused).toEqual([revoked]);
+    expect(timers).toEqual([]);
+    expect(opened).toEqual([]);
+  });
+
+  it('still retries a ticket failure it is not told to give up on', async () => {
+    const timers: { fn: () => void; ms: number }[] = [];
+    const stream = new ReconnectingStream({
+      ticket: async () => { throw new Error('offline'); },
+      url: (t) => t,
+      open: (url) => new FakeSource(url),
+      topics: ['course'],
+      onEvent: () => {},
+      schedule: (fn, ms) => timers.push({ fn, ms }),
+      giveUp: () => false,
+    });
+
+    await stream.start();
+
+    expect(timers.map((t) => t.ms)).toEqual([1000]);
+  });
 });

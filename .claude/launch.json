@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web-kds-local",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "web-kds-qr", "run", "dev"],
+      "env": { "SQUARETOAST_API": "https://localhost:8443" },
+      "port": 5173
+    },
+    {
+      "name": "web-kds-built",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["--prefix", "web-kds-qr", "vite", "preview", "web-kds-qr", "--port", "4173", "--strictPort"],
+      "env": { "SQUARETOAST_API": "https://localhost:8443" },
+      "port": 4173
+    }
+  ]
+}

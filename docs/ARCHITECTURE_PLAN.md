@@ -888,3 +888,52 @@ The gap is that the POS sync `Line` carries no options.
 - Low: a device can now make up to 20 option lookups per line (200 lines, 50 mutations per batch). It needs an enrolled token; batching the lookups into one query is a later clean-up.
 
 **Audit:** no High or Medium findings. The Low findings are written down above.
+
+---
+
+## 15. Slice 10 — the real bill on the POS, and paying it (pending approval)
+
+**Goal.** For the selected order, staff see the server's bill: items with options, subtotal, tax, paid and due. The even-split preview uses the real amount due, not the $100 demo. "Charge" starts a card payment for the real check, with a tip picked on screen. The server still decides the amount; the POS sends only the tip.
+
+**Already there:**
+- `CheckBills.Bill` (subtotal, service charge, tax, paid, due, lines), used by guest QR pages
+- `POST /checks/{id}/payments`, which takes the tip only
+- the POS's own `checkId` per order, plus `SplitAllocator`, `PaymentMethodSelector` and `TerminalSession`
+
+**Backend:**
+1. **New `GET /api/v1/checks/{checkId}/bill` for devices.**
+   - Returns `CheckBills.Bill`.
+   - A check at another location → 404, as if it didn't exist.
+   - A check the server hasn't seen yet (order still in the outbox) → 404, which the POS shows as "Bill appears once the order syncs."
+
+**Android:**
+2. **`CloudApi.bill(checkId)`.**
+3. **`BillState` (pure).**
+   - Loading, NotSynced, Offline or Ready(bill).
+   - Tip options 15 / 18 / 20 % of the pre-tax subtotal (never tax or service charge), plus a custom amount, all in long cents with half-up rounding.
+   - The split preview runs `SplitAllocator.evenly(due, ways)`.
+4. **UI.**
+   - A "Check" card under the courses shows lines with options, subtotal, tax, paid and due.
+   - Tip chips, then "Charge $X" through the existing payment-method selector. Tap to Pay and Bluetooth reader go through Stripe Terminal only; QR at table shows the table QR.
+   - Offline, it says "Bill needs a connection — use QR pay at table" (the offline claim flow is unchanged).
+   - The demo split card goes away.
+
+**Out of scope:**
+- paying one share of a split, which needs server-side split checks
+- receipts
+- refunds
+
+**First failing tests**
+
+| Test | Checks |
+|---|---|
+| `CheckPaymentIT.aDeviceReadsItsOwnChecksBill` | totals match `CheckBills`; options priced in |
+| `CheckPaymentIT.anotherLocationsCheckIsNotFound` / `anUnknownCheckIsNotFound` | 404, no leak |
+| `CloudApiTest.billReadsTheCheckWithTheDeviceToken` | GET path, bearer, parse |
+| `BillStateTest` | tips 15/18/20 on subtotal only, half-up, custom tip, never negative; split of real due sums exactly |
+
+**Verification:**
+- backend check plus the payment and sync ITs, Android tests and lint
+- on the Fold5: ring up T1, see the bill with tax, pick 18 %, and see Charge show the right total
+- Tap to Pay itself still needs your Stripe test key
+- `/security-review`, because this is a payment change

@@ -7,6 +7,7 @@ import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.get
 import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.request
 import io.ktor.http.ContentType
@@ -90,6 +91,22 @@ class CloudApi(
     suspend fun bill(checkId: UUID): Bill =
         http.get(baseUrl + "/api/v1/checks/$checkId/bill") { authenticate() }.checked().body()
 
+    /** Slice 11: the location's stock for the "Sold out" list. */
+    suspend fun stock(locationId: String): List<StockItem> {
+        require(locationId.matches(Regex("[A-Za-z0-9-]{1,64}"))) { "not a location id" }
+        return http.get(baseUrl + "/api/v1/locations/$locationId/inventory") { authenticate() }.checked().body<StockItems>().items
+    }
+
+    /** Slice 11: 86 a stock item, or bring it back. The server broadcasts the change to every screen. */
+    suspend fun setEightySixed(locationId: String, stockId: UUID, eightySixed: Boolean) {
+        require(locationId.matches(Regex("[A-Za-z0-9-]{1,64}"))) { "not a location id" }
+        http.put(baseUrl + "/api/v1/locations/$locationId/inventory/$stockId/eighty-six") {
+            authenticate()
+            contentType(ContentType.Application.Json)
+            setBody(EightySixRequest(eightySixed))
+        }.checked()
+    }
+
     suspend fun connectionToken(): String = post("/api/v1/terminal/connection_token", Unit).body<ConnectionToken>().secret
 
     suspend fun startCardPayment(checkId: UUID, idempotencyKey: UUID, method: String, tipCents: Long): StartedCardPayment {
@@ -131,3 +148,13 @@ data class Bill(
     val dueCents: Long,
     val lines: List<BillLine>,
 )
+
+/** One stock item the POS can 86 (Slice 11). `onHand` is null when the item is not counted. */
+@Serializable
+data class StockItem(val id: String, val name: String, val tracked: Boolean, val onHand: Int? = null, val eightySixed: Boolean)
+
+@Serializable
+private data class StockItems(val items: List<StockItem>)
+
+@Serializable
+private data class EightySixRequest(val eightySixed: Boolean)

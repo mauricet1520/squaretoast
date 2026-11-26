@@ -86,6 +86,60 @@ class PosViewModel @Inject constructor(
 
     fun refreshMenu() = viewModelScope.launch { menuSync.refresh() }
 
+    // ---- Sold out (plan 16). An 86 is server truth, so it needs a connection and is never queued. ----
+
+    sealed interface StockView {
+        data object Loading : StockView
+        data object Offline : StockView
+        data class Ready(val items: List<com.squaretoast.pos.sync.StockItem>) : StockView
+    }
+
+    private val _stock = MutableStateFlow<StockView>(StockView.Loading)
+    val stock: StateFlow<StockView> = _stock.asStateFlow()
+    /** Stock IDs with a switch change on its way to the server. */
+    private val _stockSaving = MutableStateFlow<Set<String>>(emptySet())
+    val stockSaving: StateFlow<Set<String>> = _stockSaving.asStateFlow()
+    private val _stockError = MutableStateFlow<String?>(null)
+    val stockError: StateFlow<String?> = _stockError.asStateFlow()
+    private var stockJob: Job? = null
+
+    private suspend fun stockLocation(): String =
+        menuMeta.value?.locationId ?: db.menuDao().meta()?.locationId ?: cloud.me().locationId
+
+    fun loadStock() {
+        stockJob?.cancel()
+        if (_stock.value !is StockView.Ready) _stock.value = StockView.Loading
+        stockJob = viewModelScope.launch {
+            _stock.value = try {
+                StockView.Ready(cloud.stock(stockLocation()))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                StockView.Offline
+            }
+        }
+    }
+
+    fun setSoldOut(item: com.squaretoast.pos.sync.StockItem, soldOut: Boolean) {
+        if (item.id in _stockSaving.value) return // one change per item at a time
+        val id = runCatching { UUID.fromString(item.id) }.getOrNull() ?: return
+        _stockSaving.value = _stockSaving.value + item.id
+        _stockError.value = null
+        viewModelScope.launch {
+            try {
+                cloud.setEightySixed(stockLocation(), id, soldOut)
+                refreshMenu() // the menu badges follow the server's derived state
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                _stockError.value = "Couldn't update ${item.name}. Check the connection and try again."
+            } finally {
+                _stockSaving.value = _stockSaving.value - item.id
+            }
+            loadStock()
+        }
+    }
+
     fun startOrder(table: String = "") { _table.value = table; _ordering.value = true; refreshMenu() }
     fun closeOrder() { _ordering.value = false }
     fun setTable(label: String) { _table.value = label.take(24) }

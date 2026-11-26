@@ -937,3 +937,40 @@ The gap is that the POS sync `Line` carries no options.
 - on the Fold5: ring up T1, see the bill with tax, pick 18 %, and see Charge show the right total
 - Tap to Pay itself still needs your Stripe test key
 - `/security-review`, because this is a payment change
+
+### 15.1 Results and changes from the plan (2026-11-26)
+
+**Changes:**
+- **`Tips` replaces `BillState`.** The plan's pure `BillState` became `Tips` (`percentOf`, `charge`), tested in `TipsTest`. The bill states (Loading / NotSynced / Offline / Ready) live in `PosViewModel.BillView`.
+- **No custom tip amount yet.** The choices are No tip, 15, 18 and 20 %.
+- **Already-passing tests.** `anotherLocationsCheckOrAnUnknownCheckIsNotFound` and the real-due split test passed before any change; they stay as regression tests.
+- **Local dev seed.** It now has a 7.25 % food tax.
+
+**Audit fixes (Medium):**
+- **Stale bill.** A slow bill reply for another order could replace the current one, so Charge could hit the wrong check. Now only the latest load may set it.
+- **Double tap on Charge.** It could start two payments. Charge now runs one at a time, the button shows "Charging…", and switching orders is blocked meanwhile.
+- **Split reset.** The split count reset on Refresh; the view model now holds it.
+
+**Audit fixes (Low):**
+- A cancelled payment rethrows instead of showing "did not complete".
+- The tip resets after a submitted payment.
+- Tip math can't crash the screen.
+
+**Security review (manual):**
+- The bill uses `CheckBalance.owed`, which matches the check's location with the device's token location. Otherwise it answers 404, like an unknown check, so it doesn't reveal the check exists.
+- The endpoint is read-only.
+- The POS still sends only the tip, and the server refuses negative or out-of-range tips.
+- No High or Medium issues.
+
+**Verified on the Fold5:**
+- T1: Burger (Bacon, Medium rare, No onion) $17.00 + tax $1.23 = due $18.23.
+- An 18 % tip of $3.06 gave Charge $21.29, split 2 ways as $10.65 + $10.64.
+- With no Stripe key, Charge fell back to "Ask the guest to scan the table QR", with the reason in plain words, and created no payment.
+- The split count survived Refresh.
+
+**Checks:**
+- Android: 123 tests and lint pass.
+- `:backend:check`, CheckPaymentIT (12) and EndpointLockdownIT (3) pass.
+- Not run: the full backend IT suite, and a real Tap to Pay charge (needs your Stripe test key).
+
+**Open:** the split shares include the POS tip, but guests paying by QR pick their own tip. Paying a single share needs server-side split checks, planned for a later slice.

@@ -39,6 +39,8 @@ import com.squaretoast.pos.terminal.TerminalSession
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -195,7 +197,10 @@ class PosViewModel @Inject constructor(
         }
     }
 
-    fun select(orderId: String) { selected.value = orderId; _tip.value = 0; loadBill() }
+    fun select(orderId: String) {
+        if (_charging.value) return // never switch checks under a running charge
+        selected.value = orderId; _tip.value = 0; _splitWays.value = 1; loadBill()
+    }
 
     // ---- The bill (plan 15). The server computes every amount; the POS shows it and picks the tip. ----
 
@@ -214,33 +219,54 @@ class PosViewModel @Inject constructor(
 
     fun setTip(cents: Long) { if (cents >= 0) _tip.value = cents }
 
-    fun loadBill() = viewModelScope.launch {
-        val checkId = selected.value?.let { orders.checkIdOf(it) }?.let(UUID::fromString)
-        if (checkId == null) { _bill.value = BillView.None; return@launch }
-        _bill.value = BillView.Loading
-        _bill.value = try {
-            BillView.Ready(checkId, cloud.bill(checkId))
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: RejectedBatchException) {
-            if (e.status == 404) BillView.NotSynced else BillView.Offline
-        } catch (e: Exception) {
-            BillView.Offline
+    private val _splitWays = MutableStateFlow(1)
+    val splitWays: StateFlow<Int> = _splitWays.asStateFlow()
+    fun setSplitWays(ways: Int) { _splitWays.value = ways.coerceIn(1, 20) }
+
+    private val _charging = MutableStateFlow(false)
+    val charging: StateFlow<Boolean> = _charging.asStateFlow()
+
+    private var billJob: Job? = null
+
+    /** Only the latest request may set the bill, so a slow answer for another order never shows (or gets charged). */
+    fun loadBill() {
+        billJob?.cancel()
+        billJob = viewModelScope.launch {
+            val checkId = selected.value?.let { orders.checkIdOf(it) }?.let(UUID::fromString)
+            if (checkId == null) { _bill.value = BillView.None; return@launch }
+            _bill.value = BillView.Loading
+            _bill.value = try {
+                BillView.Ready(checkId, cloud.bill(checkId))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: RejectedBatchException) {
+                if (e.status == 404) BillView.NotSynced else BillView.Offline
+            } catch (e: Exception) {
+                BillView.Offline
+            }
         }
     }
 
-    /** Charges the server's amount due plus the chosen tip, by the best available method. */
-    fun charge() = viewModelScope.launch {
-        val ready = _bill.value as? BillView.Ready ?: return@launch
-        choosePaymentMethod().join()
-        val c = _choice.value ?: return@launch
-        when (c.method) {
-            PaymentMethod.TAP_TO_PAY -> payWithTapToPay(ready.checkId, _tip.value).join()
-            PaymentMethod.BLUETOOTH_READER -> _message.value = "Connect the card reader to charge this check."
-            PaymentMethod.QR_PAY_AT_TABLE -> _message.value = "Ask the guest to scan the table QR to pay." +
-                (PaymentLabels.reason(c)?.let { "\n$it" } ?: "")
+    /** Charges the server's amount due plus the chosen tip, by the best available method. One charge at a time. */
+    fun charge() {
+        val ready = _bill.value as? BillView.Ready ?: return
+        if (_charging.value) return
+        _charging.value = true
+        viewModelScope.launch {
+            try {
+                choosePaymentMethod().join()
+                val c = _choice.value ?: return@launch
+                when (c.method) {
+                    PaymentMethod.TAP_TO_PAY -> if (payWithTapToPay(ready.checkId, _tip.value).await()) _tip.value = 0
+                    PaymentMethod.BLUETOOTH_READER -> _message.value = "Connect the card reader to charge this check."
+                    PaymentMethod.QR_PAY_AT_TABLE -> _message.value = "Ask the guest to scan the table QR to pay." +
+                        (PaymentLabels.reason(c)?.let { "\n$it" } ?: "")
+                }
+            } finally {
+                _charging.value = false
+                loadBill()
+            }
         }
-        loadBill()
     }
 
     fun transition(course: CourseEntity, action: CourseAction) = viewModelScope.launch {
@@ -266,12 +292,18 @@ class PosViewModel @Inject constructor(
     }
 
     /** The server computes the amount from the check; the POS only sends the guest's tip. */
-    fun payWithTapToPay(checkId: UUID, tipCents: Long) = viewModelScope.launch {
-        val outcome = runCatching {
+    /** True if the payment was submitted. A cancelled coroutine cancels cleanly rather than reporting a failure. */
+    fun payWithTapToPay(checkId: UUID, tipCents: Long) = viewModelScope.async {
+        val ok = try {
             val started = cloud.startCardPayment(checkId, UUID.randomUUID(), "CARD_PRESENT", tipCents)
-            terminal.collect(started.clientSecret)
+            terminal.collect(started.clientSecret) != null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            false
         }
-        _message.value = if (outcome.getOrNull() != null) "Payment submitted" else "Payment did not complete"
+        _message.value = if (ok) "Payment submitted" else "Payment did not complete"
+        ok
     }
 
     fun startHub() {

@@ -21,9 +21,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -100,17 +97,18 @@ private fun Ready(bill: Bill, tip: Long, vm: PosViewModel) {
     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         item { FilterChip(selected = tip == 0L, onClick = { vm.setTip(0) }, label = { Text("No tip") }) }
         items(Tips.PERCENTS) { p ->
-            val cents = Tips.percentOf(bill.subtotalCents, p)
+            val cents = runCatching { Tips.percentOf(bill.subtotalCents, p) }.getOrDefault(0L) // never crash the screen
             FilterChip(selected = tip == cents && tip != 0L, onClick = { vm.setTip(cents) }, label = { Text("$p% · ${money(cents)}") })
         }
     }
 
-    var ways by remember { mutableIntStateOf(1) }
+    val ways by vm.splitWays.collectAsState()
+    val charging by vm.charging.collectAsState()
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Split evenly", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
-        FilledTonalButton(onClick = { if (ways > 1) ways-- }, enabled = ways > 1) { Text("−") }
+        FilledTonalButton(onClick = { vm.setSplitWays(ways - 1) }, enabled = ways > 1) { Text("−") }
         Text("$ways", style = MaterialTheme.typography.titleMedium)
-        FilledTonalButton(onClick = { if (ways < 20) ways++ }, enabled = ways < 20) { Text("+") }
+        FilledTonalButton(onClick = { vm.setSplitWays(ways + 1) }, enabled = ways < 20) { Text("+") }
     }
     if (ways > 1) {
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -124,7 +122,7 @@ private fun Ready(bill: Bill, tip: Long, vm: PosViewModel) {
         Muted("Each guest pays their share at the table with QR pay.")
     }
 
-    Button(onClick = { vm.charge() }, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(top = 4.dp)) {
-        Text("Charge ${money(Tips.charge(bill.dueCents, tip))}", style = MaterialTheme.typography.titleMedium)
+    Button(onClick = { vm.charge() }, enabled = !charging, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(top = 4.dp)) {
+        Text(if (charging) "Charging…" else "Charge ${money(Tips.charge(bill.dueCents, tip))}", style = MaterialTheme.typography.titleMedium)
     }
 }

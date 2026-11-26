@@ -77,6 +77,16 @@ class InventoryListIT {
         JsonNode items = MenuFixture.body(list(loc, f.tokenFor(loc))).get("items");
         assertThat(items.get(1).get("eightySixed").asBoolean()).isTrue();
         assertThat(items.get(0).get("eightySixed").asBoolean()).isFalse();
+        assertThat(f.eightySix(loc, patty, false).statusCode()).isEqualTo(204);
+        assertThat(MenuFixture.body(list(loc, f.tokenFor(loc))).get("items").get(1).get("eightySixed").asBoolean()).isFalse();
+    }
+
+    @Test
+    void aMissingTokenIsUnauthorized() throws Exception {
+        HttpResponse<String> r = HttpClient.newHttpClient().send(
+                HttpRequest.newBuilder(URI.create(f.baseUrl() + "/locations/" + loc + "/inventory")).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(r.statusCode()).isEqualTo(401);
     }
 
     @Test

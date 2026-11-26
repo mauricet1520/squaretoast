@@ -990,3 +990,12 @@ Today the server can 86 an inventory item, and the POS shows "86'd" badges, but 
 ### 16.2 RED tests first
 - Backend `InventoryListIT`: lists the location's stock with on-hand and 86 state; another location → 404; an 86 via PUT shows up in the list.
 - Android `StockListTest`: search, ordering, empty search returns all.
+
+### 16.3 Results (2026-11-26)
+- **Already passing:** the 401/404 test passed before the change (deny-by-default device filter); kept as a regression test.
+- **Audit fixes (Medium):** a counted item at 0 now shows the switch on and disabled ("restock to bring it back") instead of a switch that does nothing; a failed refresh keeps the list on screen and shows an error instead of wiping it.
+- **Audit fixes (Low):** stale errors clear on reload; the location comes from the server (`me`), not the cached menu; tests added for un-86 and a missing token.
+- **Security review (manual):** read-only list scoped to the device's location (404 otherwise, 401 without a token); not in the guest menu, so stock counts never reach guests; 86 writes reuse the existing scoped endpoint. No High or Medium issues.
+- **Verified on the Fold5:** the Sold out sheet listed Bacon (Not counted) and Burger patty (40 left); 86ing the patty set it in the database and the Burger tile showed "86'd"; turning it back cleared it.
+- **Checks:** Android 127 tests + lint pass; `:backend:check`, InventoryListIT (4), AtomicEightySixIT, EndpointLockdownIT pass.
+- **Not covered:** view-model tests for double toggles and stale loads.

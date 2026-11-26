@@ -66,20 +66,27 @@ fun SoldOutSheet(vm: PosViewModel, onDismiss: () -> Unit) {
                     LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
                         items(shown, key = { it.id }) { item ->
                             val busy = item.id in saving
+                            // Counted stock at 0 is sold out until restocked; the switch can't bring it back.
+                            val emptyCount = StockList.soldOut(item) && !item.eightySixed
+                            val canToggle = !busy && !emptyCount
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).toggleable(
-                                    value = item.eightySixed, enabled = !busy, role = Role.Switch,
+                                    value = StockList.soldOut(item), enabled = canToggle, role = Role.Switch,
                                     onValueChange = { vm.setSoldOut(item, it) },
                                 ),
                             ) {
                                 Column(Modifier.weight(1f)) {
                                     Text(item.name, style = MaterialTheme.typography.bodyLarge)
-                                    Text(if (busy) "Saving…" else StockList.label(item), style = MaterialTheme.typography.bodySmall,
+                                    Text(when {
+                                        busy -> "Saving…"
+                                        emptyCount -> "None left · restock to bring it back"
+                                        else -> StockList.label(item)
+                                    }, style = MaterialTheme.typography.bodySmall,
                                         color = if (StockList.soldOut(item)) MaterialTheme.colorScheme.error
                                         else MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
-                                Switch(checked = item.eightySixed, onCheckedChange = null, enabled = !busy)
+                                Switch(checked = StockList.soldOut(item), onCheckedChange = null, enabled = canToggle)
                             }
                         }
                     }

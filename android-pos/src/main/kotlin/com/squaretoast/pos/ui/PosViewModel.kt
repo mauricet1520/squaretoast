@@ -103,19 +103,25 @@ class PosViewModel @Inject constructor(
     val stockError: StateFlow<String?> = _stockError.asStateFlow()
     private var stockJob: Job? = null
 
-    private suspend fun stockLocation(): String =
-        menuMeta.value?.locationId ?: db.menuDao().meta()?.locationId ?: cloud.me().locationId
+    /** Ask the server: a cached location could be stale after re-enrolment, and 86ing needs a connection anyway. */
+    private suspend fun stockLocation(): String = cloud.me().locationId
 
     fun loadStock() {
         stockJob?.cancel()
+        _stockError.value = null
         if (_stock.value !is StockView.Ready) _stock.value = StockView.Loading
         stockJob = viewModelScope.launch {
-            _stock.value = try {
-                StockView.Ready(cloud.stock(stockLocation()))
+            try {
+                _stock.value = StockView.Ready(cloud.stock(stockLocation()))
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                StockView.Offline
+                // Keep a list we already have on screen; only say "offline" when there is nothing to show.
+                if (_stock.value is StockView.Ready) {
+                    _stockError.value = "Couldn't refresh stock. Check the connection."
+                } else {
+                    _stock.value = StockView.Offline
+                }
             }
         }
     }
@@ -136,7 +142,9 @@ class PosViewModel @Inject constructor(
             } finally {
                 _stockSaving.value = _stockSaving.value - item.id
             }
+            val failed = _stockError.value
             loadStock()
+            if (failed != null) _stockError.value = failed // keep the toggle's error visible
         }
     }
 

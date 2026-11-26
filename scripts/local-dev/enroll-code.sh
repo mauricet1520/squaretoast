@@ -17,6 +17,10 @@ insert into menu_item(id, location_id, name, price_cents, tax_category) values
 insert into dining_table(id, location_id, label, qr_token)
   values ('00000000-0000-0000-0000-00000000d001', '00000000-0000-0000-0000-00000000b001', 'T1', 'local-dev-table-1')
   on conflict do nothing;
+-- Demo sales tax: 7.25% on food (the location's state code is US).
+insert into tax_rule(id, state_code, jurisdiction_code, tax_category, rate_ppm, effective_from)
+  select '00000000-0000-0000-0000-0000000000a7', 'US', 'US-STATE', 'FOOD', 72500, date '2020-01-01'
+  where not exists (select 1 from tax_rule where state_code = 'US' and jurisdiction_code = 'US-STATE' and tax_category = 'FOOD');
 -- Burger options: cook temp (required, pick 1) and extras (optional, up to 2).
 insert into modifier_group(id, location_id, name, min_select, max_select) values
   ('00000000-0000-0000-0000-00000000e001', '00000000-0000-0000-0000-00000000b001', 'Cook temp', 1, 1),

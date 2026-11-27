@@ -18,6 +18,7 @@ public final class SseClient implements AutoCloseable {
     public record Event(long id, String name, JsonNode data, long receivedNanos) {}
 
     private final BlockingQueue<Event> events = new LinkedBlockingQueue<>();
+    private final java.util.concurrent.atomic.AtomicInteger comments = new java.util.concurrent.atomic.AtomicInteger();
     private final Stream<String> lines;
     private final Thread reader;
     private final int status;
@@ -43,6 +44,11 @@ public final class SseClient implements AutoCloseable {
         HttpClient http = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).connectTimeout(Duration.ofSeconds(5)).build();
         HttpResponse<Stream<String>> r = http.send(req.build(), HttpResponse.BodyHandlers.ofLines());
         return new SseClient(r.body(), r.statusCode());
+    }
+
+    /** SSE comment lines (": …") seen so far, e.g. server heartbeats. */
+    public int comments() {
+        return comments.get();
     }
 
     public int status() {
@@ -81,6 +87,8 @@ public final class SseClient implements AutoCloseable {
                     id = null;
                     name = "message";
                     data.setLength(0);
+                } else if (line.startsWith(":")) {
+                    comments.incrementAndGet();
                 } else if (line.startsWith("id:")) {
                     id = line.substring(3).trim();
                 } else if (line.startsWith("event:")) {

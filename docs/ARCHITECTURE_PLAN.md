@@ -1118,7 +1118,10 @@ Split shares paid by claim; service charges on POS orders; claim refunds; checki
   - `:backend:check` passes, and the full integration suite passes (182 tests).
   - Shared tax vectors: 18 cases, run on both engines.
   - Android: 159 tests, lint and assemble pass.
-- **Not verified:**
-  - On a phone: the Fold5 wasn't connected, and the only emulator was running another app, so it was left alone.
-  - A guest paying a pay code end to end (needs Stripe test keys).
+- **Verified on the Fold5:**
+  1. With the local server stopped, an order for 2× Fries was placed.
+  2. The Check card showed "Show pay code", and the QR said "Scan to pay $11.80" ($11.00 + 7.25% = 79.75¢, rounded to 80¢), valid for 2 h.
+  3. After the server restarted, the order synced and the server's bill read Tax $0.80, Due $11.80, the same as the pay code.
+  4. Fix found on the phone: the New order button covered the Check card's last button. The list now ends with 96 dp of space.
+- **Not verified:** a guest scanning and paying a pay code end to end (needs Stripe test keys).
 - **Not covered:** a v4→v5 Room migration test of its own. Room validates the v5 schema when the older migration tests open their databases.

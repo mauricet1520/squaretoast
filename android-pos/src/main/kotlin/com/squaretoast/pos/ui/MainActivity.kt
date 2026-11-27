@@ -154,7 +154,7 @@ private fun PosScreen(vm: PosViewModel) {
     ) { padding ->
         LazyColumn(
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = padding.calculateTopPadding() + 4.dp,
-                bottom = padding.calculateBottomPadding() + 24.dp),
+                bottom = padding.calculateBottomPadding() + 96.dp), // room to scroll past the New order button
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             item {

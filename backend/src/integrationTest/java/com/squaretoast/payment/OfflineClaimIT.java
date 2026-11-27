@@ -390,6 +390,42 @@ class OfflineClaimIT {
         assertThat(claimStatus(check)).isEqualTo("MISMATCH");
     }
 
+    // ---------------------------------------------------------------- review fixes: a paid claim must never go silent
+
+    @Test
+    void aPaidClaimWhoseOrderIsRefusedAtSyncIsFlagged() {
+        MenuFixture m = new MenuFixture(dataSource, port);
+        UUID oil = m.untrackedInventory(loc, "Fryer oil");
+        m.itemConsumes(fries, oil, 1);
+        UUID check = UUID.randomUUID();
+        UUID key = UUID.randomUUID();
+        assertThat(d.claimPay(signed(claim(check, nonce())), key, 0).statusCode()).isEqualTo(200);
+        settle(key);
+        assertThat(m.eightySix(loc, oil, true).statusCode()).isEqualTo(204); // fries sold out online meanwhile
+
+        assertThat(DeviceFixture.results(syncCheck(check)).values()).allMatch(v -> v.get(0).equals("CONFLICT"));
+
+        assertThat(claimStatus(check)).as("money taken for an order the server refused").isEqualTo("MISMATCH");
+    }
+
+    @Test
+    void aClaimOnACheckTheServerCannotTaxStillSettlesAndIsFlagged() {
+        MenuFixture m = new MenuFixture(dataSource, port);
+        UUID wine = m.menuItem(loc, "Wine", 1000);
+        m.exec("update menu_item set tax_category = 'NO_RULE_FOR_THIS' where id = ?", wine);
+        UUID check = UUID.randomUUID();
+        assertThat(DeviceFixture.results(d.sync(pos.device().token(), List.of(d.orderPlaced(UUID.randomUUID(), UUID.randomUUID(),
+                loc, Map.of(1, UUID.randomUUID()), List.of(new Line(wine, 1, 1, 1, 1000)), check)))).values())
+                .allMatch(v -> v.get(0).equals("APPLIED"));
+        UUID key = UUID.randomUUID();
+        assertThat(d.claimPay(signed(claim(check, nonce())), key, 0).statusCode()).isEqualTo(200);
+
+        settle(key); // the webhook must not fail (and be retried forever) because the bill can't be computed
+
+        assertThat(p.payment(key).get("status")).isEqualTo("SUCCEEDED");
+        assertThat(claimStatus(check)).isEqualTo("MISMATCH");
+    }
+
     // ---------------------------------------------------------------- slice 14: a claim whose total differs from the synced check
 
     private HttpResponse<String> syncFriesOnly(UUID checkId) { // 1000 + 7.25% = 1073, not the signed 4290

@@ -1025,3 +1025,19 @@ A guest's QR order reaches the KDS, but staff never see it on the POS, so they c
 - **Verified on the Fold5:** a QR order (Burger with Cheddar, Medium; 2× Fries) showed as "T1 · waiting" with its items; Accept committed it; the chip read "T1 · $28.96"; tapping it showed the bill ($27.00 + $1.96 tax), tips, split and Charge.
 - **Checks:** Android 131 tests + lint pass; `:backend:check`, GuestOrdersIT (6), GuestQrIT, EndpointLockdownIT pass.
 - **Not covered / later:** live updates over SSE (now: on resume and Refresh); view-model tests for double accept and stale loads; per-check bill still costs a few queries each (fine at today's 50-order cap).
+
+---
+
+## 18. Slice 13 — live guest orders on the POS
+
+Slice 12 lists guest QR orders, but only on resume or Refresh. A new QR order should show up by itself, and a check a guest pays by QR should drop off without a tap.
+
+### 18.1 Decisions
+- **Reuse the authenticated KDS stream.** Any enrolled device can already get a one-time ticket (`POST /api/v1/kds/stream-tickets`) and open `GET /api/v1/kds/stream`, scoped to its location. No new endpoint.
+- **New `check` topic.** The Stripe webhook publishes `check` with only `{checkId}` the first time a payment moves to SUCCEEDED. It goes only to the authenticated stream, never the public 86 stream. No amounts or card data.
+- **POS listener** `sync/LiveEvents`: get a ticket, open the stream with the Ktor SSE client, call back on `order`, `course` and `check` events, and remember the last event id. When the stream drops it waits (1 s, 2 s, 4 s … up to 30 s) and reconnects with a fresh ticket and `lastEventId`, so nothing is missed. After every (re)connect it refreshes once.
+- **View model** runs the listener only while the app is on screen (started on resume, stopped on pause), and coalesces a burst of events into one `loadGuestOrders()`.
+
+### 18.2 RED tests first
+- Backend `PosLiveIT`: a POS device's stream hears `order` when a guest orders, `course` when staff accept it, and `check` (with only the check id) when the guest's payment succeeds; a repeated webhook does not publish again; the public stream never carries `check`.
+- Android `LiveEventsTest` (Ktor MockEngine): only order/course/check reach the callback; a reconnect sends the last event id with a fresh ticket; back-off grows and caps at 30 s; a 401 on the ticket stops the listener.

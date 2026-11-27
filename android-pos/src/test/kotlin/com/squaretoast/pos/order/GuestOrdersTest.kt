@@ -36,4 +36,20 @@ class GuestOrdersTest {
     fun theWaitingSummaryJoinsTheItems() {
         assertEquals("2× Burger (Cheddar), 1× Fries", GuestOrders.summary(waiting.copy(items = waiting.items + "1× Fries")))
     }
+
+    @Test
+    fun twoOrdersFromTheSameTableAreNumberedOldestFirst() {
+        val later = accepted.copy(orderId = "o9", openedAt = "2026-11-26T18:30:00Z", checks = listOf(check("c9", 500)))
+        val other = accepted.copy(orderId = "o8", table = "T5", checks = listOf(check("c8", 700)))
+        assertEquals(
+            listOf(GuestOrders.Chip("c9", "T3 #2 · $5.00"), GuestOrders.Chip("c8", "T5 · $7.00"), GuestOrders.Chip("c2", "T3 #1 · $18.23")),
+            GuestOrders.chips(listOf(later, other, accepted)), // the server lists newest first
+        )
+    }
+
+    @Test
+    fun aPaidEarlierOrderDoesNotNumberTheOpenOne() {
+        val earlierPaid = paid.copy(table = "T3")
+        assertEquals(listOf(GuestOrders.Chip("c2", "T3 · $18.23")), GuestOrders.chips(listOf(accepted, earlierPaid)))
+    }
 }

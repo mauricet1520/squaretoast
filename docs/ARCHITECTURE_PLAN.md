@@ -1057,7 +1057,7 @@ Slice 12 lists guest QR orders, but only on resume or Refresh. A new QR order sh
 
 ---
 
-## 19. Slice 14 — offline QR pay from the POS (pending approval)
+## 19. Slice 14 — offline QR pay from the POS
 
 When the POS has no internet, Tap to Pay is off (CLAUDE.md §4). Today the staff have no way to take a card then. The pieces exist but are not joined:
 - the Keystore claim key and `OfflineClaimSigner`;
@@ -1075,7 +1075,7 @@ The missing part is a correct total on the phone. Tax rules live only on the ser
 | S14-2 | **No drift:** one shared fixture, `testdata/tax-vectors.json` (inputs and the expected tax in cents). `TaxEngineTest` (Java) and `TaxEngineKtTest` (Kotlin) both run every vector. | If the two engines ever disagree, a build fails. Otherwise a guest would be charged a different amount than the server bill. |
 | S14-3 | **Tax profile for devices:** `GET /api/v1/locations/{id}/tax-profile` (device auth, own location only). It returns the state, currency, CA 80/80 and separate-accounting flags, and whether mandatory charges are taxed. It also returns the rules in effect from today to +7 days, plus each item's `taxCategory` and `temp`. It is stored in Room with the menu snapshot. The public menu is unchanged. | Guests don't need tax internals. The +7 days covers a rate change during a long outage. |
 | S14-4 | **Channel:** POS orders are `DINE_IN`, the same as the server stores today. There are no service charges, because POS orders cannot add them yet. | Keeps the claim equal to what the server will bill. |
-| S14-5 | **Lines digest:** SHA-256 over the check's lines, sorted by line ID (`id|qty|unitCents|optionIds`), as base64url. | Lets a later check flag a claim whose items changed after signing. The server only stores it for now. |
+| S14-5 | **Lines digest:** SHA-256 over the check's lines, sorted by line ID (`id|qty|unitCents`, where `unitCents` already includes option prices; the POS does not keep option IDs per line in Room), as base64url. | Lets a later check flag a claim whose items changed after signing. The server only stores it for now. |
 | S14-6 | **POS flow:** "QR pay at table" offers a "Show pay code" button only when the device is offline and enrolled, and the profile covers today. The QR is shown full-screen with the total and a "Expires in 2 h" note. After 2 h it has to be re-issued. The check shows "Guest paying (offline)" until sync. The fragment and token are never logged. | Card data stays in Stripe on the guest's phone (SAQ C boundary). The POS never sees a card. |
 | S14-7 | **Mismatch:** a claim that would become RECONCILED, but whose signed total ≠ the server's total for that check, becomes `MISMATCH` instead. The V1 status check already allows it, so no migration is needed. This happens in both places that reconcile: at ORDER_PLACED sync (moved to after the lines are inserted, since the total is unknown before) and in the webhook. Only the check ID is logged, and whatever was paid is kept. | Gives the owner something to look at instead of silence. Refunds stay manual. |
 
@@ -1091,3 +1091,34 @@ The missing part is a correct total on the phone. Tax rules live only on the ser
 
 ### 19.3 Not in Slice 14
 Split shares paid by claim; service charges on POS orders; claim refunds; checking the lines digest on the server.
+
+### 19.4 Results (2026-11-27)
+- **Built:**
+  - Backend: `GET /api/v1/locations/{id}/tax-profile` and `payment/ClaimReconciler` (used both at ORDER_PLACED sync and in the webhook).
+  - Android: the `domain/TaxEngine.kt` port; `payment/ClaimDrafts` and `PayCodeGate`; the tax profile stored in Room v5 with the menu.
+  - On screen: the Check card shows "Show pay code" when the bill is offline, which opens a full-screen QR with the total and its expiry time.
+- **Changed from the plan:**
+  - The tax profile row also stores the device ID from `/devices/me`. The claim needs the signer's ID, and the phone had no other offline copy of it.
+  - The digest leaves out option IDs (S14-5 updated). Room doesn't keep them, and `unitCents` already includes their prices.
+  - `PAY_BASE_URL` is a build setting (debug override `-Psquaretoast.localPayUrl`, https only).
+  - There is no lasting "Guest paying (offline)" label on the check yet. The QR dialog says who pays and until when.
+- **Existing test changed:** `OfflineClaimIT.aClaimIsPaidOnlyOnceEverythingItOwesHasSettled` now expects `MISMATCH`, not `RECONCILED`. Its synced check (one burger, $16.09) never matched the signed $42.90, which is exactly what S14-7 flags.
+- **Audit (Sonnet):** one finding, that the digest didn't match the plan text. Fixed by updating the plan. Everything else passed:
+  - the Kotlin engine matches the Java one;
+  - the claim total equals `CheckBalance.owed`;
+  - the reconcile order is safe under the claim row lock;
+  - no other location's profile can be read or used.
+- **Security review:**
+  - The profile is device-auth, own location only, and holds no secrets.
+  - Claims are signed with the enrolled Keystore key and a random nonce.
+  - The claim rides only in the URL fragment and is never logged; the reconciler logs only the check ID.
+  - No card data touches the POS.
+  - A wrong phone total can overcharge a guest, but it is flagged as MISMATCH. Refunds stay manual.
+- **Checks:**
+  - `:backend:check` passes, and the full integration suite passes (182 tests).
+  - Shared tax vectors: 18 cases, run on both engines.
+  - Android: 159 tests, lint and assemble pass.
+- **Not verified:**
+  - On a phone: the Fold5 wasn't connected, and the only emulator was running another app, so it was left alone.
+  - A guest paying a pay code end to end (needs Stripe test keys).
+- **Not covered:** a v4→v5 Room migration test of its own. Room validates the v5 schema when the older migration tests open their databases.

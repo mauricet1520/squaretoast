@@ -1124,4 +1124,4 @@ Split shares paid by claim; service charges on POS orders; claim refunds; checki
   3. After the server restarted, the order synced and the server's bill read Tax $0.80, Due $11.80, the same as the pay code.
   4. Fix found on the phone: the New order button covered the Check card's last button. The list now ends with 96 dp of space.
 - **Not verified:** a guest scanning and paying a pay code end to end (needs Stripe test keys).
-- **Not covered:** a v4→v5 Room migration test of its own. Room validates the v5 schema when the older migration tests open their databases.
+- **Follow-up:** a v4→v5 Room migration test (keeps orders and options, starts with no tax profile). Android 160 tests pass.

@@ -52,4 +52,11 @@ class GuestOrdersTest {
         val earlierPaid = paid.copy(table = "T3")
         assertEquals(listOf(GuestOrders.Chip("c2", "T3 · $18.23")), GuestOrders.chips(listOf(accepted, earlierPaid)))
     }
+
+    @Test
+    fun arrivalIsComparedAsATimeNotAsText() {
+        val a = accepted.copy(orderId = "a", openedAt = "2026-11-26T18:00:00Z", checks = listOf(check("ca", 100)))
+        val b = accepted.copy(orderId = "b", openedAt = "2026-11-26T18:00:00.500Z", checks = listOf(check("cb", 200)))
+        assertEquals(listOf("T3 #2 · $2.00", "T3 #1 · $1.00"), GuestOrders.chips(listOf(b, a)).map { it.label })
+    }
 }

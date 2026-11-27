@@ -23,7 +23,7 @@ class TaxProfileController {
 
     static final int WINDOW_DAYS = 7;
     /** Plan 19.6: offline orders are taxed by their own day, and sync accepts sale times up to 72 h old. */
-    static final int LOOKBACK_DAYS = 3;
+    static final int LOOKBACK_DAYS = 4; // 72 h can span 4 local dates across a DST change
 
     record RuleView(String jurisdictionCode, String taxCategory, @Nullable String channel, int ratePpm,
                     String effectiveFrom, @Nullable String effectiveTo) {}

@@ -84,7 +84,7 @@ public class DeviceOrderService {
         // Plan 19.6: tax by the local date of sale. The device's clock is trusted only within the last 72 hours.
         db.sql("""
                 insert into orders(id, location_id, table_id, fulfillment_channel, origin_device_id, sold_on)
-                select ?, ?, ?, 'DINE_IN', ?, cast(greatest(now() - interval '72 hours',
+                select cast(? as uuid), cast(? as uuid), cast(? as uuid), 'DINE_IN', cast(? as uuid), cast(greatest(now() - interval '72 hours',
                            least(now(), coalesce(to_timestamp(cast(? as bigint) / 1000.0), now()))) at time zone l.timezone as date)
                 from location l where l.id = ?""")
                 .params(java.util.Arrays.asList(orderId, location, table, device, placedAtMillis, location)).update();

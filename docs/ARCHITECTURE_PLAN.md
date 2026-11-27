@@ -1146,7 +1146,7 @@ Split shares paid by claim; service charges on POS orders; claim refunds; checki
   - `:backend:check` passes.
   - Integration: 184 tests. `SseRealtimeIT`'s 100 ms check failed once while the PC was busy (102 ms) and passed twice when run alone.
 
-### 19.6 Proposed: tax by the date of sale (pending approval)
+### 19.6 Tax by the date of sale
 **Problem.** `CheckBalance` taxes at `LocalDate.now(location tz)`, but the POS signs a claim with the rate on the day it rang the order up. If a rate changes at midnight between the two, a correctly paid claim is flagged MISMATCH, and the bill shows a leftover balance. A check opened before midnight and paid after has the same problem online too.
 
 **Decisions:**
@@ -1169,3 +1169,18 @@ Split shares paid by claim; service charges on POS orders; claim refunds; checki
   - An order created at 23:59 local time is taxed by that day's rules.
 - **Android:** `OrderRepository` test
   - ORDER_PLACED carries `placedAt`.
+
+**Results (2026-11-27):**
+- **Built as planned (T-1 to T-4):** `placedAt` in ORDER_PLACED; V7 `orders.sold_on`, computed in SQL and clamped to [now − 72 h, now] in local time; the bill taxed by `coalesce(sold_on, local date of opened_at)`; the pay code taxed by the order's local sale date. The tests sit in a separate `TaxDateIT` (its own database, so the rate change there touches no other test), not in CheckPaymentIT and OfflineClaimIT.
+- **Added after the audit:**
+  - The tax profile now keeps rules from the last **4** days. Before this, an order up to 72 h old could have no rules on the phone, and 72 h can span 4 local dates across a DST change.
+  - The POS refuses a pay code for an order 71 h or older, or one dated in the future, because the server would tax it by another date.
+  - The new INSERT … SELECT casts its ids to uuid.
+- **Known limits:**
+  - A device clock that is a few minutes fast, around midnight on the day of a rate change, can still sign by a different date than the server. That case is flagged MISMATCH.
+  - An enrolled POS can pick any sale date in the last 72 h (it can't change other locations, and guests can't do it). That is acceptable for now.
+- **Checks:**
+  - `:backend:check` passes.
+  - Integration: 191 tests passed before the audit fixes. After them, TaxProfileIT, TaxDateIT, DeviceSyncIT and OfflineClaimIT pass.
+  - Android: 163 tests and lint pass.
+  - Two earlier crashes were the PC running out of memory with two builds at once, not test failures.

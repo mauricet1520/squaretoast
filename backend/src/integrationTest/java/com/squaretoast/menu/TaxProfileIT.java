@@ -120,8 +120,8 @@ class TaxProfileIT {
         String old = rule("US", null, 10_000, LocalDate.of(2020, 1, 1), LocalDate.of(2020, 6, 1));
         // Plan 19.6: an order rung up to 72 h ago is taxed by its own day, so rules that ended in the last 3 days still go.
         String endsToday = rule("US", null, 10_000, LocalDate.of(2020, 1, 1), today);
-        String endedThreeDaysAgo = rule("US", null, 10_000, LocalDate.of(2020, 1, 1), today.minusDays(2));
-        String endedLongAgo = rule("US", null, 10_000, LocalDate.of(2020, 1, 1), today.minusDays(3));
+        String endedThreeDaysAgo = rule("US", null, 10_000, LocalDate.of(2020, 1, 1), today.minusDays(3));
+        String endedLongAgo = rule("US", null, 10_000, LocalDate.of(2020, 1, 1), today.minusDays(4)); // 72 h can span 4 dates across DST
         String endsSoon = rule("US", "DINE_IN", 10_000, LocalDate.of(2020, 1, 1), today.plusDays(2));
         String startsSoon = rule("US", "DINE_IN", 10_000, today.plusDays(3), null);
         String startsLater = rule("US", null, 10_000, today.plusDays(7), null);

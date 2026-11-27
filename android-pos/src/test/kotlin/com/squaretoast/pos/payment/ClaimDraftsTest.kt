@@ -102,4 +102,13 @@ class ClaimDraftsTest {
         assertEquals(LocalDate.of(2026, 11, 26), ClaimDrafts.saleDate(at.toInstant().toEpochMilli(), "America/Los_Angeles"))
         assertNull(ClaimDrafts.saleDate(0, "Not/AZone"))
     }
+
+    @Test
+    fun aPayCodeIsRefusedForAnOrderTheServerWouldTaxByAnotherDay() {
+        val now = 1_000_000_000_000L
+        val hour = 3_600_000L
+        assertTrue(ClaimDrafts.withinServerWindow(now - 70 * hour, now))
+        assertFalse("older than the server's 72 h clamp", ClaimDrafts.withinServerWindow(now - 72 * hour, now))
+        assertFalse("rung up 'in the future': the clock moved", ClaimDrafts.withinServerWindow(now + 60_000, now))
+    }
 }

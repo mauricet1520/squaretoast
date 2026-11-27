@@ -999,3 +999,19 @@ Today the server can 86 an inventory item, and the POS shows "86'd" badges, but 
 - **Verified on the Fold5:** the Sold out sheet listed Bacon (Not counted) and Burger patty (40 left); 86ing the patty set it in the database and the Burger tile showed "86'd"; turning it back cleared it.
 - **Checks:** Android 127 tests + lint pass; `:backend:check`, InventoryListIT (4), AtomicEightySixIT, EndpointLockdownIT pass.
 - **Not covered:** view-model tests for double toggles and stale loads.
+
+---
+
+## 17. Slice 12 — guest QR orders on the POS
+
+A guest's QR order reaches the KDS, but staff never see it on the POS, so they can't check or charge it. Square has no table ordering in the free tier; Toast charges extra for it.
+
+### 17.1 Decisions
+- **New endpoint** `GET /api/v1/guest-orders` (device token; the location comes from the token, so nothing in the path to tamper with). Lists COMMITTED guest orders (`origin_device_id is null`) from the last 12 hours at the device's location, newest first: `{orderId, table, openedAt, checks: [{checkId, label, status, dueCents, currency}]}`. Amounts come from the same `bills` code as the guest and POS bill.
+- **POS:** the Orders card gains a "From guests (QR)" row of chips ("T1 · $18.23"). Tapping one opens the same Check card (bill, tip, split, Charge) for that check. A local order and a guest check are never selected at once.
+- **Refresh:** on resume and with the card's Refresh button (no polling loop yet; SSE later).
+- **Pure helper** `order/GuestOrders.chips()` turns the list into chips: one per open check, unpaid first, labelled with table and amount due.
+
+### 17.2 RED tests first
+- Backend `GuestOrdersIT`: a QR order shows with its table and due; POS-made orders and other locations' orders don't; orders older than 12 hours don't; 401 without a token.
+- Android `GuestOrdersTest`: chip labels, paid checks hidden, order.

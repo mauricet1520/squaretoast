@@ -1053,3 +1053,4 @@ Slice 12 lists guest QR orders, but only on resume or Refresh. A new QR order sh
 - **Checks:** Android 139 tests + lint pass; `:backend:check`, PosLiveIT (3), GuestOrdersIT, KdsIT, StripePaymentIT, OfflineClaimIT, CheckPaymentIT pass.
 - **Not covered / later:** a real guest card payment ending live on the phone (covered by PosLiveIT, not tried on device); view-model tests for the live refresh.
 - **Follow-up (same day):** chips from the same table are numbered by arrival ("T1 #1" is the oldest, parsed as a time, not text). Android 142 tests + lint pass. Not checked on the phone.
+- **Follow-up:** the live refresh debounce and bill-reload rule moved into `sync/Debouncer.kt` with unit tests (`DebouncerTest`, 4 tests). Android 146 tests + lint pass. The view model itself still has no tests.

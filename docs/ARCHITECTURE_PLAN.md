@@ -974,3 +974,82 @@ The gap is that the POS sync `Line` carries no options.
 - Not run: the full backend IT suite, and a real Tap to Pay charge (needs your Stripe test key).
 
 **Open:** the split shares include the POS tip, but guests paying by QR pick their own tip. Paying a single share needs server-side split checks, planned for a later slice.
+
+---
+
+## 16. Slice 11 — 86 from the POS (mark stock sold out and back)
+
+Today the server can 86 an inventory item, and the POS shows "86'd" badges, but no screen lets staff do it. Square and Toast both bury this; here it is one tap from order entry.
+
+### 16.1 Decisions
+- **New read endpoint** `GET /api/v1/locations/{locationId}/inventory` (device token). Returns `items: [{id, name, tracked, onHand, eightySixed}]` sorted by name. Another location, or an unknown one, gives 404. Not part of the guest menu, so stock counts never reach guests.
+- **POS "Sold out" sheet** opened from order entry: a list of stock with a switch each. A switch calls the existing PUT `.../eighty-six`, then refreshes the menu so badges update. Needs a connection; offline it says so (an 86 must be server truth, so it is not queued in the outbox).
+- **Pure helper** `order/StockList` filters by search text and puts 86'd items first.
+- **Local seed** adds stock: "Burger patty" (Burger) and "Bacon" (the Bacon option).
+
+### 16.2 RED tests first
+- Backend `InventoryListIT`: lists the location's stock with on-hand and 86 state; another location → 404; an 86 via PUT shows up in the list.
+- Android `StockListTest`: search, ordering, empty search returns all.
+
+### 16.3 Results (2026-11-26)
+- **Already passing:** the 401/404 test passed before the change (deny-by-default device filter); kept as a regression test.
+- **Audit fixes (Medium):** a counted item at 0 now shows the switch on and disabled ("restock to bring it back") instead of a switch that does nothing; a failed refresh keeps the list on screen and shows an error instead of wiping it.
+- **Audit fixes (Low):** stale errors clear on reload; the location comes from the server (`me`), not the cached menu; tests added for un-86 and a missing token.
+- **Security review (manual):** read-only list scoped to the device's location (404 otherwise, 401 without a token); not in the guest menu, so stock counts never reach guests; 86 writes reuse the existing scoped endpoint. No High or Medium issues.
+- **Verified on the Fold5:** the Sold out sheet listed Bacon (Not counted) and Burger patty (40 left); 86ing the patty set it in the database and the Burger tile showed "86'd"; turning it back cleared it.
+- **Checks:** Android 127 tests + lint pass; `:backend:check`, InventoryListIT (4), AtomicEightySixIT, EndpointLockdownIT pass.
+- **Not covered:** view-model tests for double toggles and stale loads.
+
+---
+
+## 17. Slice 12 — guest QR orders on the POS
+
+A guest's QR order reaches the KDS, but staff never see it on the POS, so they can't check or charge it. Square has no table ordering in the free tier; Toast charges extra for it.
+
+### 17.1 Decisions
+- **New endpoint** `GET /api/v1/guest-orders` (device token; the location comes from the token, so nothing in the path to tamper with). Lists COMMITTED guest orders (`origin_device_id is null`) from the last 12 hours at the device's location, newest first: `{orderId, table, openedAt, checks: [{checkId, label, status, dueCents, currency}]}`. Amounts come from the same `bills` code as the guest and POS bill.
+- **POS:** the Orders card gains a "From guests (QR)" row of chips ("T1 · $18.23"). Tapping one opens the same Check card (bill, tip, split, Charge) for that check. A local order and a guest check are never selected at once.
+- **Refresh:** on resume and with the card's Refresh button (no polling loop yet; SSE later).
+- **Pure helper** `order/GuestOrders.chips()` turns the list into chips: one per open check, unpaid first, labelled with table and amount due.
+
+### 17.2 RED tests first
+- Backend `GuestOrdersIT`: a QR order shows with its table and due; POS-made orders and other locations' orders don't; orders older than 12 hours don't; 401 without a token.
+- Android `GuestOrdersTest`: chip labels, paid checks hidden, order.
+- **Plan change (found while exploring):** guest orders wait (`OPEN`) until staff accept them. So the list also returns waiting orders (`status: "WAITING"`, with `items: ["2× Burger (Cheddar)"]` and no checks), and the POS shows an **Accept** button that calls the existing `POST /api/v1/orders/{id}/commit`. This is the Slice 6/7 follow-up "POS screens for accepting guest orders".
+
+### 17.3 Results (2026-11-26)
+- **Already passing:** the 401 test (deny-by-default device filter); kept as a regression test.
+- **Audit fixes (Medium):** order items load in one query for all orders, not one query per line; a check that fails to load (e.g. voided mid-request) is skipped and logged instead of failing the whole list.
+- **Audit fixes (Low):** a 409 on Accept now says "may already be accepted, or something is sold out" (it was always "sold out"); a guest check that is paid or gone stops showing its bill after a refresh (never mid-charge); test added for a voided check.
+- **Security review (manual):** the location comes only from the device token; each check's bill is computed with that location (`CheckBills` 404s otherwise); Accept reuses the existing location-checked commit endpoint; concurrent POS + guest QR payments on one check are serialised server-side (`CheckPaymentService` row lock + in-flight balance). No High or Medium issues left.
+- **Verified on the Fold5:** a QR order (Burger with Cheddar, Medium; 2× Fries) showed as "T1 · waiting" with its items; Accept committed it; the chip read "T1 · $28.96"; tapping it showed the bill ($27.00 + $1.96 tax), tips, split and Charge.
+- **Checks:** Android 131 tests + lint pass; `:backend:check`, GuestOrdersIT (6), GuestQrIT, EndpointLockdownIT pass.
+- **Not covered / later:** live updates over SSE (now: on resume and Refresh); view-model tests for double accept and stale loads; per-check bill still costs a few queries each (fine at today's 50-order cap).
+
+---
+
+## 18. Slice 13 — live guest orders on the POS
+
+Slice 12 lists guest QR orders, but only on resume or Refresh. A new QR order should show up by itself, and a check a guest pays by QR should drop off without a tap.
+
+### 18.1 Decisions
+- **Reuse the authenticated KDS stream.** Any enrolled device can already get a one-time ticket (`POST /api/v1/kds/stream-tickets`) and open `GET /api/v1/kds/stream`, scoped to its location. No new endpoint.
+- **New `check` topic.** The Stripe webhook publishes `check` with only `{checkId}` the first time a payment moves to SUCCEEDED. It goes only to the authenticated stream, never the public 86 stream. No amounts or card data.
+- **POS listener** `sync/LiveEvents`: get a ticket, open the stream with the Ktor SSE client, call back on `order`, `course` and `check` events, and remember the last event id. When the stream drops it waits (1 s, 2 s, 4 s … up to 30 s) and reconnects with a fresh ticket and `lastEventId`, so nothing is missed. After every (re)connect it refreshes once.
+- **View model** runs the listener only while the app is on screen (started on resume, stopped on pause), and coalesces a burst of events into one `loadGuestOrders()`.
+
+### 18.2 RED tests first
+- Backend `PosLiveIT`: a POS device's stream hears `order` when a guest orders and `order` (status ACCEPTED) when staff accept it, and `check` (with only the check id) when the guest's payment succeeds; a repeated webhook does not publish again; the public stream never carries `check`.
+- Android `LiveEventsTest` (Ktor MockEngine): only order/course/check reach the callback; a reconnect sends the last event id with a fresh ticket; back-off grows and caps at 30 s; a 401 on the ticket stops the listener.
+
+### 18.3 Results (2026-11-26)
+- **Plan change (found by the RED run):** accepting a guest order published nothing (courses are not fired on accept). Accept now publishes `order` with `{orderId, status: "ACCEPTED"}`, so every POS drops its Accept button.
+- **SSE parsing is our own small `SseParser`** over a streamed GET, not the Ktor SSE plugin: it works the same on OkHttp and in MockEngine tests. The server sends nothing while idle, so the stream has a 120 s socket timeout and reconnects (a cheap check that also notices a dead Wi-Fi link).
+- **Audit fixes (Medium):** an offline-claim payment has no `check_id`; the `check` event now carries `coalesce(check_id, claim_check_id)`, never null.
+- **Audit fixes (Low):** back-off restarts only after a stream delivered an event or stayed open 10 s (a server that accepts then drops at once no longer gives a flat 1 s loop); a refused stream ticket is retried, and only a refused device token stops the listener. Tests added for both.
+- **Audit finding not changed:** a `check` event during the POS's own charge skips the bill reload, but `charge()` already reloads the bill when it finishes.
+- **Security review (manual):** events go only to the ticketed, location-scoped stream (the public `/stream` stays availability-only, tested). The `check` payload is the check id alone: no amounts, no card data. Publishing happens inside the webhook's transaction, once per payment (a replayed webhook publishes nothing, tested). The ticket call uses the device token; the stream URL carries only the one-time ticket. No High or Medium issues left.
+- **Verified on the Fold5:** with the POS open, a QR order (3× Fries) placed from the PC showed as "T1 · waiting" within 3 s with no tap; Accept turned it into the chip "T1 · $17.70".
+- **Checks:** Android 139 tests + lint pass; `:backend:check`, PosLiveIT (3), GuestOrdersIT, KdsIT, StripePaymentIT, OfflineClaimIT, CheckPaymentIT pass.
+- **Not covered / later:** a real guest card payment ending live on the phone (covered by PosLiveIT, not tried on device); view-model tests for the live refresh.
+- **Follow-up (same day):** chips from the same table are numbered by arrival ("T1 #1" is the oldest, parsed as a time, not text). Android 142 tests + lint pass. Not checked on the phone.

@@ -1,0 +1,23 @@
+# PUBLIC_HOST is a hostname (HTTPS from Let's Encrypt), e.g. 203-0-113-7.sslip.io, or ":80" for a plain local test.
+{$PUBLIC_HOST} {
+	encode gzip
+
+	# The cloud API. Only /api is exposed; actuator and everything else stay inside the Docker network.
+	handle /api/* {
+		reverse_proxy backend:8080
+	}
+
+	# The browser KDS and guest QR pages (a single-page app).
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+}

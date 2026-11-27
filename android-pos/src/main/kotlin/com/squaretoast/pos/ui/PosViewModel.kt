@@ -86,6 +86,68 @@ class PosViewModel @Inject constructor(
 
     fun refreshMenu() = viewModelScope.launch { menuSync.refresh() }
 
+    // ---- Sold out (plan 16). An 86 is server truth, so it needs a connection and is never queued. ----
+
+    sealed interface StockView {
+        data object Loading : StockView
+        data object Offline : StockView
+        data class Ready(val items: List<com.squaretoast.pos.sync.StockItem>) : StockView
+    }
+
+    private val _stock = MutableStateFlow<StockView>(StockView.Loading)
+    val stock: StateFlow<StockView> = _stock.asStateFlow()
+    /** Stock IDs with a switch change on its way to the server. */
+    private val _stockSaving = MutableStateFlow<Set<String>>(emptySet())
+    val stockSaving: StateFlow<Set<String>> = _stockSaving.asStateFlow()
+    private val _stockError = MutableStateFlow<String?>(null)
+    val stockError: StateFlow<String?> = _stockError.asStateFlow()
+    private var stockJob: Job? = null
+
+    /** Ask the server: a cached location could be stale after re-enrolment, and 86ing needs a connection anyway. */
+    private suspend fun stockLocation(): String = cloud.me().locationId
+
+    fun loadStock() {
+        stockJob?.cancel()
+        _stockError.value = null
+        if (_stock.value !is StockView.Ready) _stock.value = StockView.Loading
+        stockJob = viewModelScope.launch {
+            try {
+                _stock.value = StockView.Ready(cloud.stock(stockLocation()))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Keep a list we already have on screen; only say "offline" when there is nothing to show.
+                if (_stock.value is StockView.Ready) {
+                    _stockError.value = "Couldn't refresh stock. Check the connection."
+                } else {
+                    _stock.value = StockView.Offline
+                }
+            }
+        }
+    }
+
+    fun setSoldOut(item: com.squaretoast.pos.sync.StockItem, soldOut: Boolean) {
+        if (item.id in _stockSaving.value) return // one change per item at a time
+        val id = runCatching { UUID.fromString(item.id) }.getOrNull() ?: return
+        _stockSaving.value = _stockSaving.value + item.id
+        _stockError.value = null
+        viewModelScope.launch {
+            try {
+                cloud.setEightySixed(stockLocation(), id, soldOut)
+                refreshMenu() // the menu badges follow the server's derived state
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                _stockError.value = "Couldn't update ${item.name}. Check the connection and try again."
+            } finally {
+                _stockSaving.value = _stockSaving.value - item.id
+            }
+            val failed = _stockError.value
+            loadStock()
+            if (failed != null) _stockError.value = failed // keep the toggle's error visible
+        }
+    }
+
     fun startOrder(table: String = "") { _table.value = table; _ordering.value = true; refreshMenu() }
     fun closeOrder() { _ordering.value = false }
     fun setTable(label: String) { _table.value = label.take(24) }
@@ -199,7 +261,88 @@ class PosViewModel @Inject constructor(
 
     fun select(orderId: String) {
         if (_charging.value) return // never switch checks under a running charge
+        _guestCheck.value = null
         selected.value = orderId; _tip.value = 0; _splitWays.value = 1; loadBill()
+    }
+
+    // ---- Guest QR orders (plan 17). A local order and a guest check are never selected at once. ----
+
+    private val _guestOrders = MutableStateFlow<List<com.squaretoast.pos.sync.GuestOrder>>(emptyList())
+    val guestOrders: StateFlow<List<com.squaretoast.pos.sync.GuestOrder>> = _guestOrders.asStateFlow()
+    private val _guestCheck = MutableStateFlow<String?>(null)
+    val selectedGuestCheck: StateFlow<String?> = _guestCheck.asStateFlow()
+    private val _accepting = MutableStateFlow<Set<String>>(emptySet())
+    val accepting: StateFlow<Set<String>> = _accepting.asStateFlow()
+    private var guestJob: Job? = null
+    private var liveJob: Job? = null
+    private var liveRefresh: Job? = null
+
+    /** Slice 13: while the POS is on screen, refresh guest orders (and an open guest bill) when the cloud says so. */
+    fun startLive() {
+        if (liveJob?.isActive == true) return
+        liveJob = viewModelScope.launch {
+            com.squaretoast.pos.sync.LiveEvents(cloud).run {
+                liveRefresh?.cancel() // a burst of events becomes one refresh
+                liveRefresh = launch {
+                    kotlinx.coroutines.delay(300)
+                    loadGuestOrders()
+                    if (_guestCheck.value != null && !_charging.value) loadBill()
+                }
+            }
+        }
+    }
+
+    fun stopLive() {
+        liveJob?.cancel()
+        liveJob = null
+    }
+
+    fun loadGuestOrders() {
+        guestJob?.cancel()
+        guestJob = viewModelScope.launch {
+            try {
+                val fresh = cloud.guestOrders()
+                _guestOrders.value = fresh
+                // A guest check that is paid or gone leaves the list; stop showing its bill (never mid-charge).
+                val open = _guestCheck.value
+                if (open != null && !_charging.value && com.squaretoast.pos.order.GuestOrders.chips(fresh).none { it.checkId == open }) {
+                    _guestCheck.value = null
+                    _bill.value = BillView.None
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Offline: keep what we last saw; QR orders need the cloud anyway.
+            }
+        }
+    }
+
+    fun selectGuestCheck(checkId: String) {
+        if (_charging.value) return
+        selected.value = null
+        _guestCheck.value = checkId; _tip.value = 0; _splitWays.value = 1; loadBill()
+    }
+
+    fun accept(order: com.squaretoast.pos.sync.GuestOrder) {
+        if (order.orderId in _accepting.value) return // one accept per order at a time
+        val id = runCatching { UUID.fromString(order.orderId) }.getOrNull() ?: return
+        _accepting.value = _accepting.value + order.orderId
+        viewModelScope.launch {
+            try {
+                cloud.acceptOrder(id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: RejectedBatchException) {
+                _message.value = if (e.status == 409) "${order.table}: couldn't accept. It may already be accepted, " +
+                    "or something on it is sold out. Check the list and talk to the guest if needed."
+                else "Couldn't accept the order for ${order.table}. Try again."
+            } catch (_: Exception) {
+                _message.value = "Couldn't accept the order for ${order.table}. Check the connection."
+            } finally {
+                _accepting.value = _accepting.value - order.orderId
+            }
+            loadGuestOrders()
+        }
     }
 
     // ---- The bill (plan 15). The server computes every amount; the POS shows it and picks the tip. ----
@@ -232,7 +375,8 @@ class PosViewModel @Inject constructor(
     fun loadBill() {
         billJob?.cancel()
         billJob = viewModelScope.launch {
-            val checkId = selected.value?.let { orders.checkIdOf(it) }?.let(UUID::fromString)
+            val checkId = (_guestCheck.value ?: selected.value?.let { orders.checkIdOf(it) })
+                ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
             if (checkId == null) { _bill.value = BillView.None; return@launch }
             _bill.value = BillView.Loading
             _bill.value = try {

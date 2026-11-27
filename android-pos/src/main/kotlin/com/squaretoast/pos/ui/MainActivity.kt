@@ -98,6 +98,9 @@ private fun PosScreen(vm: PosViewModel) {
     val conflicts by vm.conflicts.collectAsState()
     val message by vm.message.collectAsState()
     val hubUrl by vm.hubUrl.collectAsState()
+    val guestOrders by vm.guestOrders.collectAsState()
+    val guestCheck by vm.selectedGuestCheck.collectAsState()
+    val accepting by vm.accepting.collectAsState()
 
     conflicts.firstOrNull()?.let { row ->
         // A refused change (e.g. OVERSOLD) blocks until a person has seen it and tapped OK; never dropped silently.
@@ -117,7 +120,13 @@ private fun PosScreen(vm: PosViewModel) {
     // Keep the saved menu (and its 86s) current: refresh whenever the POS comes back to the front.
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle) {
-        val observer = LifecycleEventObserver { _, e -> if (e == Lifecycle.Event.ON_RESUME) vm.refreshMenu() }
+        val observer = LifecycleEventObserver { _, e ->
+            when (e) {
+                Lifecycle.Event.ON_RESUME -> { vm.refreshMenu(); vm.loadGuestOrders(); vm.startLive() }
+                Lifecycle.Event.ON_PAUSE -> vm.stopLive() // no open stream in the background
+                else -> {}
+            }
+        }
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }
     }
@@ -160,10 +169,11 @@ private fun PosScreen(vm: PosViewModel) {
                     }
                 }
             }
+            item { GuestOrdersSection(guestOrders, guestCheck, accepting, vm) }
             if (selected != null) {
                 items(courses, key = { it.id }) { c -> CourseCard(c) { a -> vm.transition(c, a) } }
             }
-            if (selected != null) {
+            if (selected != null || guestCheck != null) {
                 item { CheckCard(vm) }
             }
             item { HubPanel(hubUrl, vm::startHub, vm::stopHub) }

@@ -34,6 +34,21 @@ public class MenuRepository {
         this.jdbc = jdbc;
     }
 
+    /** Slice 11: the location's stock for the POS "Sold out" list, sorted by name. */
+    public List<StockView> stock(UUID location) {
+        return jdbc.sql("select id, name, tracked, on_hand, manually_86ed from inventory_item where location_id = ? order by lower(name), id")
+                .param(location)
+                .query((rs, n) -> new StockView(uuid(rs, "id"), rs.getString("name"), rs.getBoolean("tracked"),
+                        rs.getObject("on_hand", Integer.class), rs.getBoolean("manually_86ed")))
+                .list();
+    }
+
+    public record StockView(UUID id, String name, boolean tracked, @Nullable Integer onHand, boolean eightySixed) {}
+
+    public boolean locationExists(UUID location) {
+        return jdbc.sql("select 1 from location where id = ?").param(location).query(Integer.class).optional().isPresent();
+    }
+
     public Optional<LocationMenu> load(UUID location) {
         Optional<String> currency = jdbc.sql("select currency from location where id = ?").param(location)
                 .query(String.class).optional();

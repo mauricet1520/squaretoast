@@ -35,6 +35,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -66,6 +67,8 @@ fun OrderEntryScreen(vm: PosViewModel) {
     val withOptions by vm.itemsWithOptions.collectAsState()
     val sheet by vm.sheet.collectAsState()
     sheet?.let { OptionsSheet(it, onAdd = vm::addWithOptions, onDismiss = vm::closeOptions) }
+    var showSoldOut by remember { mutableStateOf(false) }
+    if (showSoldOut) SoldOutSheet(vm, onDismiss = { showSoldOut = false })
     var seat by remember { mutableIntStateOf(1) }
     var course by remember { mutableIntStateOf(1) }
     val columns = if (LocalConfiguration.current.screenWidthDp >= 600) 4 else 2 // unfolded Fold or tablet: wider grid
@@ -77,6 +80,7 @@ fun OrderEntryScreen(vm: PosViewModel) {
             CenterAlignedTopAppBar(
                 title = { Text("New order", fontWeight = FontWeight.SemiBold) },
                 navigationIcon = { TextButton(onClick = vm::closeOrder) { Text("Cancel") } },
+                actions = { TextButton(onClick = { showSoldOut = true }) { Text("Sold out") } },
             )
         },
         bottomBar = {

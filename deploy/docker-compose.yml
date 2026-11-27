@@ -1,0 +1,60 @@
+# SquareToast on its own small server: Postgres, the Spring Boot backend, and Caddy for HTTPS + the KDS/QR web app.
+# Secrets come from .env next to this file (chmod 600, never committed). See .env.example.
+name: squaretoast
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: squaretoast
+      POSTGRES_USER: squaretoast
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U squaretoast"]
+      interval: 5s
+      retries: 20
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/squaretoast
+      SPRING_DATASOURCE_USERNAME: squaretoast
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      SERVER_PORT: "8080"
+      SERVER_FORWARDHEADERSSTRATEGY: framework # Caddy terminates HTTPS
+      SQUARETOAST_STRIPE_SECRETKEY: ${STRIPE_SECRET_KEY:-}
+      SQUARETOAST_STRIPE_WEBHOOKSECRETS: ${STRIPE_WEBHOOK_SECRETS:-}
+      JAVA_TOOL_OPTIONS: -Xmx768m -XX:+ExitOnOutOfMemoryError
+    mem_limit: 1g
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:?set PUBLIC_HOST in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./web:/srv/web:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  pgdata:
+  caddy-data:
+  caddy-config:

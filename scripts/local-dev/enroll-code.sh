@@ -38,6 +38,15 @@ insert into modifier_option(id, modifier_group_id, name, price_delta_cents) valu
   ('00000000-0000-0000-0000-00000000f005', '00000000-0000-0000-0000-00000000e002', 'Cheddar', 150),
   ('00000000-0000-0000-0000-00000000f006', '00000000-0000-0000-0000-00000000e002', 'No onion', 0)
   on conflict do nothing;
+-- Demo stock for the POS "Sold out" list: patties (counted) feed the Burger, bacon feeds the Bacon option.
+insert into inventory_item(id, location_id, name, tracked, on_hand) values
+  ('00000000-0000-0000-0000-0000000001a1', '00000000-0000-0000-0000-00000000b001', 'Burger patty', true, 40),
+  ('00000000-0000-0000-0000-0000000001a2', '00000000-0000-0000-0000-00000000b001', 'Bacon', false, null)
+  on conflict do nothing;
+insert into inventory_consumption(id, menu_item_id, modifier_option_id, inventory_item_id, qty) values
+  ('00000000-0000-0000-0000-0000000001b1', '00000000-0000-0000-0000-00000000c001', null, '00000000-0000-0000-0000-0000000001a1', 1),
+  ('00000000-0000-0000-0000-0000000001b2', null, '00000000-0000-0000-0000-00000000f004', '00000000-0000-0000-0000-0000000001a2', 1)
+  on conflict do nothing;
 SQL
 
 code=$(head -c 12 /dev/urandom | base64 | tr -dc 'A-Z0-9' | head -c 8)

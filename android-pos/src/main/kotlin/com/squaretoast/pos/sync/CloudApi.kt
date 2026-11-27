@@ -2,18 +2,26 @@ package com.squaretoast.pos.sync
 
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.plugins.timeout
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.bearerAuth
+import io.ktor.client.request.accept
 import io.ktor.client.request.get
+import io.ktor.client.request.parameter
+import io.ktor.client.request.prepareGet
 import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.request
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
+import io.ktor.utils.io.readUTF8Line
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.util.Base64
@@ -66,6 +74,7 @@ class CloudApi(
 
     private val http = engine.config {
         install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+        install(HttpTimeout)
     }
 
     /** Public endpoint: the one-time code is the credential. */
@@ -90,6 +99,62 @@ class CloudApi(
     suspend fun bill(checkId: UUID): Bill =
         http.get(baseUrl + "/api/v1/checks/$checkId/bill") { authenticate() }.checked().body()
 
+    /** Slice 11: the location's stock for the "Sold out" list. */
+    suspend fun stock(locationId: String): List<StockItem> {
+        require(locationId.matches(Regex("[A-Za-z0-9-]{1,64}"))) { "not a location id" }
+        return http.get(baseUrl + "/api/v1/locations/$locationId/inventory") { authenticate() }.checked().body<StockItems>().items
+    }
+
+    /** Slice 11: 86 a stock item, or bring it back. The server broadcasts the change to every screen. */
+    suspend fun setEightySixed(locationId: String, stockId: UUID, eightySixed: Boolean) {
+        require(locationId.matches(Regex("[A-Za-z0-9-]{1,64}"))) { "not a location id" }
+        http.put(baseUrl + "/api/v1/locations/$locationId/inventory/$stockId/eighty-six") {
+            authenticate()
+            contentType(ContentType.Application.Json)
+            setBody(EightySixRequest(eightySixed))
+        }.checked()
+    }
+
+    /** Slice 12: the device's location's guest QR orders from the last 12 hours, newest first. */
+    suspend fun guestOrders(): List<GuestOrder> =
+        http.get(baseUrl + "/api/v1/guest-orders") { authenticate() }.checked().body<GuestOrderList>().orders
+
+    /** Slice 12: staff accept a waiting guest order; the server commits it, takes stock and opens its check. */
+    suspend fun acceptOrder(orderId: UUID) {
+        post("/api/v1/orders/$orderId/commit", Unit)
+    }
+
+
+    /** Slice 13: a one-time ticket for the location's live stream (the stream itself takes no bearer token). */
+    suspend fun streamTicket(): String = post("/api/v1/kds/stream-tickets", Unit).body<StreamTicket>().ticket
+
+    /**
+     * Slice 13: opens the live stream with [ticket], calls [onOpen] once the server accepts it, then hands each event
+     * to [onEvent] until the stream ends. The server sends nothing while idle, so a quiet stream times out after
+     * [STREAM_IDLE_MS] and the caller reconnects (cheap, and it notices a dead Wi-Fi link).
+     */
+    suspend fun liveStream(ticket: String, lastEventId: Long?, onOpen: suspend () -> Unit, onEvent: suspend (SseEvent) -> Unit) {
+        http.prepareGet(baseUrl + "/api/v1/kds/stream") {
+            parameter("ticket", ticket)
+            lastEventId?.let { parameter("lastEventId", it) }
+            accept(ContentType.Text.EventStream)
+            timeout { socketTimeoutMillis = STREAM_IDLE_MS }
+        }.execute { response ->
+            // Not RejectedBatchException: a refused ticket (expired, server restarted) is retried, not a revoked device.
+            if (!response.status.isSuccess()) throw java.io.IOException("live stream returned ${response.status.value}")
+            onOpen()
+            val channel = response.bodyAsChannel()
+            val parser = SseParser()
+            while (true) {
+                val line = channel.readUTF8Line() ?: break
+                parser.line(line)?.let { onEvent(it) }
+            }
+        }
+    }
+
+    companion object {
+        const val STREAM_IDLE_MS = 120_000L
+    }
     suspend fun connectionToken(): String = post("/api/v1/terminal/connection_token", Unit).body<ConnectionToken>().secret
 
     suspend fun startCardPayment(checkId: UUID, idempotencyKey: UUID, method: String, tipCents: Long): StartedCardPayment {
@@ -131,3 +196,34 @@ data class Bill(
     val dueCents: Long,
     val lines: List<BillLine>,
 )
+
+/** One stock item the POS can 86 (Slice 11). `onHand` is null when the item is not counted. */
+@Serializable
+data class StockItem(val id: String, val name: String, val tracked: Boolean, val onHand: Int? = null, val eightySixed: Boolean)
+
+@Serializable
+private data class StockItems(val items: List<StockItem>)
+
+@Serializable
+private data class EightySixRequest(val eightySixed: Boolean)
+
+/** Slice 12: one check of an accepted guest QR order, with the server's amount due. */
+@Serializable
+data class GuestCheck(val checkId: String, val label: String, val status: String, val dueCents: Long, val currency: String)
+
+/** Slice 12: a guest QR order. WAITING ones need staff to accept them; ACCEPTED ones have checks. */
+@Serializable
+data class GuestOrder(
+    val orderId: String,
+    val table: String,
+    val openedAt: String,
+    val status: String,
+    val items: List<String> = emptyList(),
+    val checks: List<GuestCheck> = emptyList(),
+)
+
+@Serializable
+private data class GuestOrderList(val orders: List<GuestOrder>)
+
+@Serializable
+private data class StreamTicket(val ticket: String, val expiresInSeconds: Int = 60)

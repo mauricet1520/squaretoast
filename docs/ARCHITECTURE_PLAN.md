@@ -1016,3 +1016,12 @@ A guest's QR order reaches the KDS, but staff never see it on the POS, so they c
 - Backend `GuestOrdersIT`: a QR order shows with its table and due; POS-made orders and other locations' orders don't; orders older than 12 hours don't; 401 without a token.
 - Android `GuestOrdersTest`: chip labels, paid checks hidden, order.
 - **Plan change (found while exploring):** guest orders wait (`OPEN`) until staff accept them. So the list also returns waiting orders (`status: "WAITING"`, with `items: ["2× Burger (Cheddar)"]` and no checks), and the POS shows an **Accept** button that calls the existing `POST /api/v1/orders/{id}/commit`. This is the Slice 6/7 follow-up "POS screens for accepting guest orders".
+
+### 17.3 Results (2026-11-26)
+- **Already passing:** the 401 test (deny-by-default device filter); kept as a regression test.
+- **Audit fixes (Medium):** order items load in one query for all orders, not one query per line; a check that fails to load (e.g. voided mid-request) is skipped and logged instead of failing the whole list.
+- **Audit fixes (Low):** a 409 on Accept now says "may already be accepted, or something is sold out" (it was always "sold out"); a guest check that is paid or gone stops showing its bill after a refresh (never mid-charge); test added for a voided check.
+- **Security review (manual):** the location comes only from the device token; each check's bill is computed with that location (`CheckBills` 404s otherwise); Accept reuses the existing location-checked commit endpoint; concurrent POS + guest QR payments on one check are serialised server-side (`CheckPaymentService` row lock + in-flight balance). No High or Medium issues left.
+- **Verified on the Fold5:** a QR order (Burger with Cheddar, Medium; 2× Fries) showed as "T1 · waiting" with its items; Accept committed it; the chip read "T1 · $28.96"; tapping it showed the bill ($27.00 + $1.96 tax), tips, split and Charge.
+- **Checks:** Android 131 tests + lint pass; `:backend:check`, GuestOrdersIT (6), GuestQrIT, EndpointLockdownIT pass.
+- **Not covered / later:** live updates over SSE (now: on resume and Refresh); view-model tests for double accept and stale loads; per-check bill still costs a few queries each (fine at today's 50-order cap).

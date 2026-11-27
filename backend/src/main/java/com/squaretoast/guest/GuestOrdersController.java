@@ -4,8 +4,14 @@ import com.squaretoast.device.DevicePrincipal;
 import com.squaretoast.payment.CheckBills;
 import com.squaretoast.payment.CheckBills.Bill;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Stream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
@@ -19,6 +25,7 @@ import org.springframework.web.bind.annotation.RestController;
 class GuestOrdersController {
 
     static final int MAX_ORDERS = 50;
+    private static final Logger log = LoggerFactory.getLogger(GuestOrdersController.class);
 
     private final JdbcClient db;
     private final CheckBills bills;
@@ -42,22 +49,32 @@ class GuestOrdersController {
                 .query((rs, n) -> new Row(rs.getObject("id", UUID.class), rs.getString("label"),
                         rs.getObject("opened_at", OffsetDateTime.class), rs.getString("status")))
                 .list();
+        Map<UUID, List<String>> items = items(rows.stream().map(Row::id).toList());
         return new GuestOrderList(rows.stream().map(r -> new GuestOrder(r.id(), r.table(), r.openedAt().toInstant().toString(),
-                r.status().equals("OPEN") ? "WAITING" : "ACCEPTED", items(r.id()),
+                r.status().equals("OPEN") ? "WAITING" : "ACCEPTED", items.getOrDefault(r.id(), List.of()),
                 r.status().equals("OPEN") ? List.of() : checks(r.id(), location))).toList());
     }
 
-    /** "2× Burger (Cheddar)", from the server's own name snapshots. */
-    private List<String> items(UUID order) {
-        record Line(UUID id, int qty, String name) {}
-        return db.sql("select id, qty, name_snapshot from order_line where order_id = ? order by name_snapshot, id")
-                .params(order)
-                .query((rs, n) -> new Line(rs.getObject("id", UUID.class), rs.getInt("qty"), rs.getString("name_snapshot")))
-                .list().stream().map(l -> {
-                    List<String> mods = db.sql("select name_snapshot from order_line_modifier where order_line_id = ? order by name_snapshot, id")
-                            .params(l.id()).query(String.class).list();
-                    return l.qty() + "× " + l.name() + (mods.isEmpty() ? "" : " (" + String.join(", ", mods) + ")");
-                }).toList();
+    /** "2× Burger (Cheddar)" per order, from the server's own name snapshots, in one query for all orders. */
+    private Map<UUID, List<String>> items(List<UUID> orders) {
+        Map<UUID, List<String>> out = new HashMap<>();
+        if (orders.isEmpty()) {
+            return out;
+        }
+        db.sql("""
+                select l.order_id, l.qty, l.name_snapshot,
+                       string_agg(m.name_snapshot, ', ' order by m.name_snapshot, m.id) as mods
+                from order_line l left join order_line_modifier m on m.order_line_id = l.id
+                where l.order_id in (:orders)
+                group by l.id, l.order_id, l.qty, l.name_snapshot
+                order by l.name_snapshot, l.id""")
+                .param("orders", orders)
+                .query(rs -> {
+                    String mods = rs.getString("mods");
+                    out.computeIfAbsent(rs.getObject("order_id", UUID.class), k -> new ArrayList<>())
+                            .add(rs.getInt("qty") + "× " + rs.getString("name_snapshot") + (mods == null ? "" : " (" + mods + ")"));
+                });
+        return out;
     }
 
     private List<CheckSummary> checks(UUID order, UUID location) {
@@ -65,9 +82,15 @@ class GuestOrdersController {
         return db.sql("select id, label from guest_check where order_id = ? and status <> 'VOID' order by label, id")
                 .params(order)
                 .query((rs, n) -> new C(rs.getObject("id", UUID.class), rs.getString("label")))
-                .list().stream().map(c -> {
-                    Bill b = bills.bill(c.id(), location);
-                    return new CheckSummary(c.id(), c.label(), b.status(), b.dueCents(), b.currency());
+                .list().stream().flatMap(c -> {
+                    try {
+                        Bill b = bills.bill(c.id(), location);
+                        return Stream.of(new CheckSummary(c.id(), c.label(), b.status(), b.dueCents(), b.currency()));
+                    } catch (RuntimeException e) {
+                        // e.g. voided between the two queries: leave that one check out rather than fail the whole list
+                        log.warn("guest-orders: skipping check {}: {}", c.id(), e.toString());
+                        return Stream.<CheckSummary>empty();
+                    }
                 }).toList();
     }
 

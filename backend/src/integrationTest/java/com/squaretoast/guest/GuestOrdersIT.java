@@ -110,6 +110,16 @@ class GuestOrdersIT {
     }
 
     @Test
+    void aVoidedCheckIsLeftOut() {
+        UUID order = guestOrder(qr, 1);
+        assertThat(d.commit(pos.token(), order).statusCode()).isEqualTo(200);
+        m.exec("update guest_check set status = 'VOID' where order_id = ?", order);
+        JsonNode o = list(pos.token()).get(0);
+        assertThat(o.get("status").asString()).isEqualTo("ACCEPTED");
+        assertThat(o.get("checks")).isEmpty();
+    }
+
+    @Test
     void newestFirst() {
         UUID first = guestOrder(qr, 1);
         m.exec("update orders set opened_at = now() - interval '1 hour' where id = ?", first);

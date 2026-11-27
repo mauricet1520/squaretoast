@@ -279,7 +279,14 @@ class PosViewModel @Inject constructor(
         guestJob?.cancel()
         guestJob = viewModelScope.launch {
             try {
-                _guestOrders.value = cloud.guestOrders()
+                val fresh = cloud.guestOrders()
+                _guestOrders.value = fresh
+                // A guest check that is paid or gone leaves the list; stop showing its bill (never mid-charge).
+                val open = _guestCheck.value
+                if (open != null && !_charging.value && com.squaretoast.pos.order.GuestOrders.chips(fresh).none { it.checkId == open }) {
+                    _guestCheck.value = null
+                    _bill.value = BillView.None
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -304,7 +311,8 @@ class PosViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: RejectedBatchException) {
-                _message.value = if (e.status == 409) "${order.table}: something on this order is sold out. Talk to the guest."
+                _message.value = if (e.status == 409) "${order.table}: couldn't accept. It may already be accepted, " +
+                    "or something on it is sold out. Check the list and talk to the guest if needed."
                 else "Couldn't accept the order for ${order.table}. Try again."
             } catch (_: Exception) {
                 _message.value = "Couldn't accept the order for ${order.table}. Check the connection."

@@ -1077,13 +1077,13 @@ The missing part is a correct total on the phone. Tax rules live only on the ser
 | S14-4 | **Channel:** POS orders are `DINE_IN`, the same as the server stores today. There are no service charges, because POS orders cannot add them yet. | Keeps the claim equal to what the server will bill. |
 | S14-5 | **Lines digest:** SHA-256 over the check's lines, sorted by line ID (`id|qty|unitCents|optionIds`), as base64url. | Lets a later check flag a claim whose items changed after signing. The server only stores it for now. |
 | S14-6 | **POS flow:** "QR pay at table" offers a "Show pay code" button only when the device is offline and enrolled, and the profile covers today. The QR is shown full-screen with the total and a "Expires in 2 h" note. After 2 h it has to be re-issued. The check shows "Guest paying (offline)" until sync. The fragment and token are never logged. | Card data stays in Stripe on the guest's phone (SAQ C boundary). The POS never sees a card. |
-| S14-7 | **Mismatch at sync:** if a check's synced total ≠ the claim total, the server sets `offline_check_claim.status = 'MISMATCH'` (in V9) and logs the check ID only. Whatever was paid is kept. | Gives the owner something to look at instead of silence. Refunds stay manual. |
+| S14-7 | **Mismatch:** a claim that would become RECONCILED, but whose signed total ≠ the server's total for that check, becomes `MISMATCH` instead. The V1 status check already allows it, so no migration is needed. This happens in both places that reconcile: at ORDER_PLACED sync (moved to after the lines are inserted, since the total is unknown before) and in the webhook. Only the check ID is logged, and whatever was paid is kept. | Gives the owner something to look at instead of silence. Refunds stay manual. |
 
 ### 19.2 RED tests first
 - **Backend:**
   - `TaxEngineTest` reads the shared vectors.
   - `TaxProfileIT`: own location only, 401 without a device, rules windowed to +7 days.
-  - `OfflineClaimIT`: a mismatched total at sync → MISMATCH.
+  - `OfflineClaimIT`: a paid claim with a different total → MISMATCH at sync; a matching one → RECONCILED; a claim paid after sync with a different total → MISMATCH.
 - **Android:**
   - `TaxEngineKtTest` (the same vectors).
   - `ClaimDraftsTest`: builds a draft from Room lines and the profile; digest order; fails closed on a missing rule.

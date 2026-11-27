@@ -1015,3 +1015,4 @@ A guest's QR order reaches the KDS, but staff never see it on the POS, so they c
 ### 17.2 RED tests first
 - Backend `GuestOrdersIT`: a QR order shows with its table and due; POS-made orders and other locations' orders don't; orders older than 12 hours don't; 401 without a token.
 - Android `GuestOrdersTest`: chip labels, paid checks hidden, order.
+- **Plan change (found while exploring):** guest orders wait (`OPEN`) until staff accept them. So the list also returns waiting orders (`status: "WAITING"`, with `items: ["2× Burger (Cheddar)"]` and no checks), and the POS shows an **Accept** button that calls the existing `POST /api/v1/orders/{id}/commit`. This is the Slice 6/7 follow-up "POS screens for accepting guest orders".

@@ -1145,3 +1145,27 @@ Split shares paid by claim; service charges on POS orders; claim refunds; checki
 - **Checks:**
   - `:backend:check` passes.
   - Integration: 184 tests. `SseRealtimeIT`'s 100 ms check failed once while the PC was busy (102 ms) and passed twice when run alone.
+
+### 19.6 Proposed: tax by the date of sale (pending approval)
+**Problem.** `CheckBalance` taxes at `LocalDate.now(location tz)`, but the POS signs a claim with the rate on the day it rang the order up. If a rate changes at midnight between the two, a correctly paid claim is flagged MISMATCH, and the bill shows a leftover balance. A check opened before midnight and paid after has the same problem online too.
+
+**Decisions:**
+
+| # | Decision | Why |
+|---|---|---|
+| T-1 | The POS adds `placedAt` (epoch ms, device clock) to the ORDER_PLACED payload. It is optional, so older POS builds still sync. | The device knows when the sale happened; the server only sees when it synced. |
+| T-2 | Migration V7 adds `orders.sold_on date`. For device orders it is the location-local date of `placedAt`, kept within [now − 72 h, now] to guard against a wrong device clock. For guest orders, and when `placedAt` is missing, it is the local date of `opened_at`. | One stored tax date per order, never "today". 72 h is the longest offline window we plan for. |
+| T-3 | `CheckBalance` and `ClaimReconciler` tax at `sold_on`. | The tax point is the sale, the same as the phone uses. |
+| T-4 | `ClaimDrafts` uses the local date of `OrderEntity.createdAt` instead of today. `PayCodeGate` still needs a tax profile that covers today. | The phone and the server then pick the same rules. |
+
+**RED tests first:**
+- **Backend:** `CheckPaymentIT`
+  - An order placed yesterday, with the rate changing today, is billed at yesterday's rate.
+  - A `placedAt` in the future, or more than 72 h ago, is clamped.
+  - A missing `placedAt` uses `opened_at`.
+- **Backend:** `OfflineClaimIT`
+  - A claim signed before a midnight rate change reconciles rather than being flagged MISMATCH.
+- **Android:** `ClaimDraftsTest`
+  - An order created at 23:59 local time is taxed by that day's rules.
+- **Android:** `OrderRepository` test
+  - ORDER_PLACED carries `placedAt`.

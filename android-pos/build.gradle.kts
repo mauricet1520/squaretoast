@@ -17,6 +17,8 @@ android {
         versionCode = 1
         versionName = "0.5.0"
         buildConfigField("String", "CLOUD_BASE_URL", "\"https://api.squaretoast.app\"")
+        // Slice 14: where a guest opens an offline pay code (the web app's /c page).
+        buildConfigField("String", "PAY_BASE_URL", "\"https://pay.squaretoast.app/c\"")
     }
 
     buildFeatures {
@@ -44,6 +46,10 @@ android {
     providers.gradleProperty("squaretoast.localCloudUrl").orNull?.let { url ->
         require(url.startsWith("https://")) { "the cloud API is https only" }
         buildTypes["debug"].buildConfigField("String", "CLOUD_BASE_URL", "\"$url\"")
+        providers.gradleProperty("squaretoast.localPayUrl").orNull?.let { pay ->
+            require(pay.startsWith("https://")) { "the pay page is https only" }
+            buildTypes["debug"].buildConfigField("String", "PAY_BASE_URL", "\"$pay\"")
+        }
         sourceSets["debug"].manifest.srcFile("local-dev/AndroidManifest.xml")
         sourceSets["debug"].res.directories.add(file("local-dev/res").path)
     }

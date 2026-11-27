@@ -57,14 +57,16 @@ public class StripeWebhookService {
     private final PaymentGatewayPort gateway;
     private final LedgerService ledger;
     private final RealtimePublisher realtime;
+    private final ClaimReconciler claims;
 
     StripeWebhookService(JdbcClient db, JsonMapper json, PaymentGatewayPort gateway, LedgerService ledger,
-                         RealtimePublisher realtime) {
+                         RealtimePublisher realtime, ClaimReconciler claims) {
         this.db = db;
         this.json = json;
         this.gateway = gateway;
         this.ledger = ledger;
         this.realtime = realtime;
+        this.claims = claims;
     }
 
     private record LockedPayment(UUID id, UUID checkId, long amountCents, long tipCents, long feeCents, String currency,
@@ -147,6 +149,7 @@ public class StripeWebhookService {
                        where s.status = 'SUCCEEDED' and (s.claim_check_id = c.check_id or s.check_id = c.check_id))
                       >= c.amount_cents""")
                 .params(p.id()).update();
+        claims.flagMismatch(p.checkId(), p.locationId()); // a claim paid after its check synced (S14-7)
 
         String balanceTxn = text(charge.path("balance_transaction"));
         if (balanceTxn == null || ledger.hasEntry(CardSettlement.KIND, intentRef)) {

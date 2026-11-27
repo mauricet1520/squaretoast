@@ -95,6 +95,12 @@ class CloudApi(
         return http.get(baseUrl + "/api/v1/locations/$locationId/menu") { authenticate() }.checked().body()
     }
 
+    /** Slice 14: the device's own location's tax setup, for totalling a check offline. */
+    override suspend fun taxProfile(locationId: String): TaxProfile {
+        require(locationId.matches(Regex("[A-Za-z0-9-]{1,64}"))) { "not a location id" }
+        return http.get(baseUrl + "/api/v1/locations/$locationId/tax-profile") { authenticate() }.checked().body()
+    }
+
     /** The check's bill as the server computes it. 404 (RejectedBatchException) until the order has synced. */
     suspend fun bill(checkId: UUID): Bill =
         http.get(baseUrl + "/api/v1/checks/$checkId/bill") { authenticate() }.checked().body()

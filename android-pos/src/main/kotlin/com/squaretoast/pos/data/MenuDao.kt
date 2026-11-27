@@ -23,4 +23,7 @@ interface MenuDao {
     /** A shared group is listed under each of its items; its options are stored once. */
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertOptions(options: List<ModifierOptionEntity>)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putMeta(meta: MenuMetaEntity)
+    @Query("select * from tax_profile where id = 0") suspend fun taxProfile(): TaxProfileEntity?
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putTaxProfile(profile: TaxProfileEntity)
+    @Query("delete from tax_profile") suspend fun clearTaxProfile()
 }

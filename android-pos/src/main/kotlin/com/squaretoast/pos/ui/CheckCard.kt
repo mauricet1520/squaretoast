@@ -46,7 +46,12 @@ fun CheckCard(vm: PosViewModel) {
             when (val v = view) {
                 PosViewModel.BillView.None, PosViewModel.BillView.Loading -> Muted("Loading the bill…")
                 PosViewModel.BillView.NotSynced -> Muted("The bill appears once this order reaches the server.")
-                PosViewModel.BillView.Offline -> Muted("The bill needs a connection. Use QR pay at the table if you're offline.")
+                PosViewModel.BillView.Offline -> {
+                    Muted("No connection, so cards can't be tapped here. The guest can pay on their own phone instead.")
+                    Button(onClick = { vm.showPayCode() }, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) {
+                        Text("Show pay code")
+                    }
+                }
                 is PosViewModel.BillView.Ready -> Ready(v.bill, tip, vm)
             }
         }

@@ -1136,7 +1136,7 @@ Split shares paid by claim; service charges on POS orders; claim refunds; checki
   - **Repricing.** Sync reprices lines from the current menu, and the claim charges the signed total. A price change while offline means MISMATCH (flagged, not prevented).
   - **Gate signal.** The pay-code gate uses "the last bill load failed" as its offline signal, not live connectivity.
   - **Guest orders.** Accepted guest checks drop off the POS after 12 h. A guest order with an 86'd item can't be accepted or rejected.
-  - **Idle streams.** With no server heartbeat, idle live streams reconnect every 2 minutes.
+  - ~~Idle streams reconnect every 2 minutes~~ — fixed: the server sends an SSE comment heartbeat every 25 s (`squaretoast.realtime.heartbeat`); SseHeartbeatIT.
   - **Bigger question.** Should an offline order ever be refused for stock at all? The food was already served.
 - **Checked against outside evidence:**
   - Stripe Terminal's offline mode doesn't support Tap to Pay, which matches CLAUDE.md.

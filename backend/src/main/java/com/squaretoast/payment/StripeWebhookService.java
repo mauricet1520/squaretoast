@@ -70,7 +70,7 @@ public class StripeWebhookService {
     private record LockedPayment(UUID id, UUID checkId, long amountCents, long tipCents, long feeCents, String currency,
                                  UUID locationId) {}
 
-    /** Slice 13: only which check changed, for the authenticated stream; the POS re-reads the bill itself. */
+    /** Slice 13: only which check (or offline claim check) changed; the POS re-reads the bill itself. */
     record CheckChanged(UUID checkId) {}
 
     @Transactional
@@ -107,7 +107,7 @@ public class StripeWebhookService {
             return;
         }
         Optional<LockedPayment> found = db.sql("""
-                select p.id, p.check_id, p.amount_cents, p.tip_cents, p.application_fee_cents, p.currency,
+                select p.id, coalesce(p.check_id, p.claim_check_id) as check_id, p.amount_cents, p.tip_cents, p.application_fee_cents, p.currency,
                        coalesce(o.location_id, cl.location_id) as location_id
                 from payment p
                 left join guest_check c on c.id = p.check_id

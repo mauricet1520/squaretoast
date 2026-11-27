@@ -140,7 +140,8 @@ class CloudApi(
             accept(ContentType.Text.EventStream)
             timeout { socketTimeoutMillis = STREAM_IDLE_MS }
         }.execute { response ->
-            if (!response.status.isSuccess()) throw RejectedBatchException(response.status.value)
+            // Not RejectedBatchException: a refused ticket (expired, server restarted) is retried, not a revoked device.
+            if (!response.status.isSuccess()) throw java.io.IOException("live stream returned ${response.status.value}")
             onOpen()
             val channel = response.bodyAsChannel()
             val parser = SseParser()

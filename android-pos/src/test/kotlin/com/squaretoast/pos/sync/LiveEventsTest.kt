@@ -114,4 +114,47 @@ class LiveEventsTest {
         withTimeout(5_000) { job.join() }
         assertEquals(listOf(1_000L, 2_000L, 4_000L), sleeps)
     }
+
+    @Test
+    fun aStreamThatOpensAndDropsAtOnceStillBacksOffLonger() = runBlocking {
+        val api = api(streams = arrayOf("", "", "")) // accepted, then closed with no events
+        val job = launch {
+            LiveEvents(api, sleep = { sleeps += it; if (sleeps.size == 3) throw kotlinx.coroutines.CancellationException() },
+                clock = { 0L }).run { }
+        }
+        withTimeout(5_000) { job.join() }
+        assertEquals(listOf(1_000L, 2_000L, 4_000L), sleeps)
+    }
+
+    @Test
+    fun aStreamThatStayedOpenAWhileStartsTheBackOffOver() = runBlocking {
+        var now = 0L
+        val api = api(streams = arrayOf("", "", ""))
+        val job = launch {
+            LiveEvents(api, sleep = { sleeps += it; if (sleeps.size == 3) throw kotlinx.coroutines.CancellationException() },
+                clock = { now.also { now += LiveEvents.HEALTHY_MILLIS } }).run { } // each open lasts 10 s
+        }
+        withTimeout(5_000) { job.join() }
+        assertEquals(listOf(1_000L, 1_000L, 1_000L), sleeps)
+    }
+
+    @Test
+    fun aRefusedStreamTicketIsRetriedNotTreatedAsARevokedDevice() = runBlocking {
+        val engine = MockEngine { req ->
+            synchronized(requests) { requests += req }
+            if (req.url.encodedPath.endsWith("/kds/stream-tickets")) {
+                tickets++
+                respond("""{"ticket":"tk-$tickets","expiresInSeconds":60}""", HttpStatusCode.OK,
+                    headersOf(HttpHeaders.ContentType, "application/json"))
+            } else {
+                respond("", HttpStatusCode.Unauthorized)
+            }
+        }
+        var rejected = false
+        val api = CloudApi("https://api.test", HttpClient(engine), { "tok" }, { rejected = true })
+        val job = launch { LiveEvents(api, sleep = { sleeps += it; if (sleeps.size == 2) throw kotlinx.coroutines.CancellationException() }).run { } }
+        withTimeout(5_000) { job.join() }
+        assertEquals(2, tickets)
+        assertEquals(false, rejected) // the device token was never refused
+    }
 }

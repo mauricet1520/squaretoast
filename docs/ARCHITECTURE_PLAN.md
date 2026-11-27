@@ -1041,3 +1041,14 @@ Slice 12 lists guest QR orders, but only on resume or Refresh. A new QR order sh
 ### 18.2 RED tests first
 - Backend `PosLiveIT`: a POS device's stream hears `order` when a guest orders and `order` (status ACCEPTED) when staff accept it, and `check` (with only the check id) when the guest's payment succeeds; a repeated webhook does not publish again; the public stream never carries `check`.
 - Android `LiveEventsTest` (Ktor MockEngine): only order/course/check reach the callback; a reconnect sends the last event id with a fresh ticket; back-off grows and caps at 30 s; a 401 on the ticket stops the listener.
+
+### 18.3 Results (2026-11-26)
+- **Plan change (found by the RED run):** accepting a guest order published nothing (courses are not fired on accept). Accept now publishes `order` with `{orderId, status: "ACCEPTED"}`, so every POS drops its Accept button.
+- **SSE parsing is our own small `SseParser`** over a streamed GET, not the Ktor SSE plugin: it works the same on OkHttp and in MockEngine tests. The server sends nothing while idle, so the stream has a 120 s socket timeout and reconnects (a cheap check that also notices a dead Wi-Fi link).
+- **Audit fixes (Medium):** an offline-claim payment has no `check_id`; the `check` event now carries `coalesce(check_id, claim_check_id)`, never null.
+- **Audit fixes (Low):** back-off restarts only after a stream delivered an event or stayed open 10 s (a server that accepts then drops at once no longer gives a flat 1 s loop); a refused stream ticket is retried, and only a refused device token stops the listener. Tests added for both.
+- **Audit finding not changed:** a `check` event during the POS's own charge skips the bill reload, but `charge()` already reloads the bill when it finishes.
+- **Security review (manual):** events go only to the ticketed, location-scoped stream (the public `/stream` stays availability-only, tested). The `check` payload is the check id alone: no amounts, no card data. Publishing happens inside the webhook's transaction, once per payment (a replayed webhook publishes nothing, tested). The ticket call uses the device token; the stream URL carries only the one-time ticket. No High or Medium issues left.
+- **Verified on the Fold5:** with the POS open, a QR order (3× Fries) placed from the PC showed as "T1 · waiting" within 3 s with no tap; Accept turned it into the chip "T1 · $17.70".
+- **Checks:** Android 139 tests + lint pass; `:backend:check`, PosLiveIT (3), GuestOrdersIT, KdsIT, StripePaymentIT, OfflineClaimIT, CheckPaymentIT pass.
+- **Not covered / later:** a real guest card payment ending live on the phone (covered by PosLiveIT, not tried on device); two chips for the same table look alike ("T1 · …"); view-model tests for the live refresh.

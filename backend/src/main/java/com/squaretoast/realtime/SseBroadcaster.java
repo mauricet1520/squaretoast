@@ -1,6 +1,7 @@
 package com.squaretoast.realtime;
 
 import com.squaretoast.realtime.RealtimeEventStore.StoredEvent;
+import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -8,11 +9,16 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
@@ -33,9 +39,46 @@ class SseBroadcaster {
 
     private final RealtimeEventStore store;
     private final ConcurrentHashMap<UUID, Channel> channels = new ConcurrentHashMap<>();
+    private final ScheduledFuture<?> beating;
+    private final ScheduledExecutorService heartbeats = Executors.newSingleThreadScheduledExecutor(
+            Thread.ofPlatform().name("sse-heartbeat").daemon().factory());
 
-    SseBroadcaster(RealtimeEventStore store) {
+    /**
+     * Every {@code heartbeat}, each open stream gets an SSE comment. A quiet POS then keeps its stream (its client
+     * gives up after two silent minutes) and idle proxies do not cut it. Comments have no id, so replay is unchanged.
+     */
+    SseBroadcaster(RealtimeEventStore store, @Value("${squaretoast.realtime.heartbeat:25s}") Duration heartbeat) {
         this.store = store;
+        this.beating = heartbeats.scheduleAtFixedRate(this::beat, heartbeat.toMillis(), heartbeat.toMillis(), TimeUnit.MILLISECONDS);
+    }
+
+    @PreDestroy
+    void stop() {
+        beating.cancel(false);
+        heartbeats.shutdownNow();
+    }
+
+    private void beat() {
+        for (Channel ch : channels.values()) {
+            if (ch.subscribers.isEmpty() || !ch.lock.tryLock()) {
+                continue; // a pump holding the lock is sending real events right now
+            }
+            try {
+                List<Subscriber> gone = new ArrayList<>();
+                for (Subscriber s : ch.subscribers) {
+                    try {
+                        s.emitter().send(SseEmitter.event().comment("hb"));
+                    } catch (IOException | IllegalStateException closed) {
+                        gone.add(s);
+                    }
+                }
+                ch.subscribers.removeAll(gone);
+            } catch (RuntimeException e) {
+                log.debug("heartbeat failed", e); // the next beat tries again
+            } finally {
+                ch.lock.unlock();
+            }
+        }
     }
 
     /** {@code topics} decides which topics this subscriber may see; replay and live delivery both apply it. */

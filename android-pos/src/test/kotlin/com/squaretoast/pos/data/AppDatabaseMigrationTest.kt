@@ -117,4 +117,39 @@ class AppDatabaseMigrationTest {
             db.close()
         }
     }
+
+    @Test
+    fun aVersionFourDatabaseKeepsItsOptionsAndGetsNoTaxProfile() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val file = context.getDatabasePath("migrate4.db").apply { parentFile?.mkdirs(); delete() }
+        val schema = Json.parseToJsonElement(
+            checkNotNull(javaClass.classLoader?.getResource("com.squaretoast.pos.data.AppDatabase/4.json")).readText(),
+        ).jsonObject["database"]!!.jsonObject
+
+        SQLiteDatabase.openOrCreateDatabase(file, null).use { old ->
+            for (e in schema["entities"]!!.jsonArray) {
+                val table = e.jsonObject["tableName"]!!.jsonPrimitive.content
+                old.execSQL(e.jsonObject["createSql"]!!.jsonPrimitive.content.replace("\${TABLE_NAME}", table))
+                e.jsonObject["indices"]?.jsonArray?.forEach {
+                    old.execSQL(it.jsonObject["createSql"]!!.jsonPrimitive.content.replace("\${TABLE_NAME}", table))
+                }
+            }
+            schema["setupQueries"]!!.jsonArray.forEach { old.execSQL(it.jsonPrimitive.content) }
+            old.execSQL("insert into orders (id, locationId, tableLabel, createdAt, checkId) values ('o-4', 'l-1', 'T3', 1, 'c-4')")
+            old.execSQL("insert into modifier_group (menuItemId, id, name, minSelect, maxSelect, position) values ('steak', 'g-1', 'Cook', 1, 1, 0)")
+            old.version = 4
+        }
+
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, file.absolutePath)
+            .addMigrations(*AppDatabase.MIGRATIONS).allowMainThreadQueries().build()
+        try {
+            assertEquals("c-4", db.orderDao().order("o-4")!!.checkId)
+            assertEquals(listOf("g-1"), db.menuDao().groupsFor("steak").map { it.id })
+            assertEquals(null, db.menuDao().taxProfile()) // fetched on the next menu refresh; no pay code until then
+            db.menuDao().putTaxProfile(TaxProfileEntity(locationId = "l-1", deviceId = "d-1", json = "{}", fetchedAt = 1))
+            assertEquals("d-1", db.menuDao().taxProfile()!!.deviceId)
+        } finally {
+            db.close()
+        }
+    }
 }

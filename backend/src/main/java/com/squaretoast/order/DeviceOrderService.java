@@ -4,6 +4,7 @@ import com.squaretoast.domain.order.CourseAction;
 import com.squaretoast.domain.order.CourseState;
 import com.squaretoast.domain.order.CourseStateMachine;
 import com.squaretoast.domain.order.IllegalCourseTransitionException;
+import com.squaretoast.payment.ClaimReconciler;
 import com.squaretoast.realtime.RealtimePublisher;
 import com.squaretoast.realtime.Topics;
 import java.util.LinkedHashMap;
@@ -40,12 +41,15 @@ public class DeviceOrderService {
     private final OrderCommitService commits;
     private final RealtimePublisher realtime;
     private final KdsTickets tickets;
+    private final ClaimReconciler claims;
 
-    DeviceOrderService(JdbcClient db, OrderCommitService commits, RealtimePublisher realtime, KdsTickets tickets) {
+    DeviceOrderService(JdbcClient db, OrderCommitService commits, RealtimePublisher realtime, KdsTickets tickets,
+                       ClaimReconciler claims) {
         this.db = db;
         this.commits = commits;
         this.realtime = realtime;
         this.tickets = tickets;
+        this.claims = claims;
     }
 
     @Transactional(propagation = Propagation.MANDATORY)
@@ -103,11 +107,6 @@ public class DeviceOrderService {
         db.sql("select pg_advisory_xact_lock(hashtextextended(cast(? as text), 1))").params("payment:" + check)
                 .query((rs, n) -> n).list(); // the key PaymentService.lockTarget uses
         db.sql("insert into guest_check(id, order_id, label) values (?, ?, 'Check 1')").params(check, orderId).update();
-        db.sql("""
-                update offline_check_claim set reconciled_at = now(),
-                       status = case when status = 'PAID' then 'RECONCILED' else status end
-                where check_id = ? and location_id = ?""")
-                .params(check, location).update();
         for (PlacedLine l : lines) {
             MenuLine m = db.sql("select price_cents, tax_category, temp, name from menu_item where id = ? and location_id = ?")
                     .params(l.menuItemId(), location)
@@ -139,6 +138,7 @@ public class DeviceOrderService {
             db.sql("insert into check_allocation(check_id, order_line_id, numerator, denominator) values (?, ?, 1, 1)")
                     .params(check, l.lineId()).update();
         }
+        claims.checkSynced(check, location); // after the lines: the check's total is known only now (S14-7)
         try {
             commits.commit(orderId); // inventory is taken here, at commit, not at kitchen print
         } catch (CommitException.Conflict e) {

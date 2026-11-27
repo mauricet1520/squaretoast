@@ -1053,3 +1053,95 @@ Slice 12 lists guest QR orders, but only on resume or Refresh. A new QR order sh
 - **Checks:** Android 139 tests + lint pass; `:backend:check`, PosLiveIT (3), GuestOrdersIT, KdsIT, StripePaymentIT, OfflineClaimIT, CheckPaymentIT pass.
 - **Not covered / later:** a real guest card payment ending live on the phone (covered by PosLiveIT, not tried on device); view-model tests for the live refresh.
 - **Follow-up (same day):** chips from the same table are numbered by arrival ("T1 #1" is the oldest, parsed as a time, not text). Android 142 tests + lint pass. Not checked on the phone.
+- **Follow-up:** the live refresh debounce and bill-reload rule moved into `sync/Debouncer.kt` with unit tests (`DebouncerTest`, 4 tests). Android 146 tests + lint pass. The view model itself still has no tests.
+
+---
+
+## 19. Slice 14 — offline QR pay from the POS
+
+When the POS has no internet, Tap to Pay is off (CLAUDE.md §4). Today the staff have no way to take a card then. The pieces exist but are not joined:
+- the Keystore claim key and `OfflineClaimSigner`;
+- the guest `/c#…` page;
+- the public claim payment endpoint;
+- claim reconciliation (Slices 6–7).
+
+The missing part is a correct total on the phone. Tax rules live only on the server.
+
+### 19.1 Decisions
+
+| # | Decision | Why |
+|---|---|---|
+| S14-1 | **Tax on the phone:** a Kotlin port of `TaxEngine` (about 100 lines). It covers per-jurisdiction rates, a channel rule replacing the any-channel rule, the CA cold-food-to-go rule, and half-up rounding once per check. A missing rule fails closed, so no QR is shown. | A cached server total goes stale as soon as staff add an item offline. |
+| S14-2 | **No drift:** one shared fixture, `testdata/tax-vectors.json` (inputs and the expected tax in cents). `TaxEngineTest` (Java) and `TaxEngineKtTest` (Kotlin) both run every vector. | If the two engines ever disagree, a build fails. Otherwise a guest would be charged a different amount than the server bill. |
+| S14-3 | **Tax profile for devices:** `GET /api/v1/locations/{id}/tax-profile` (device auth, own location only). It returns the state, currency, CA 80/80 and separate-accounting flags, and whether mandatory charges are taxed. It also returns the rules in effect from today to +7 days, plus each item's `taxCategory` and `temp`. It is stored in Room with the menu snapshot. The public menu is unchanged. | Guests don't need tax internals. The +7 days covers a rate change during a long outage. |
+| S14-4 | **Channel:** POS orders are `DINE_IN`, the same as the server stores today. There are no service charges, because POS orders cannot add them yet. | Keeps the claim equal to what the server will bill. |
+| S14-5 | **Lines digest:** SHA-256 over the check's lines, sorted by line ID (`id|qty|unitCents`, where `unitCents` already includes option prices; the POS does not keep option IDs per line in Room), as base64url. | Lets a later check flag a claim whose items changed after signing. The server only stores it for now. |
+| S14-6 | **POS flow:** "QR pay at table" offers a "Show pay code" button only when the device is offline and enrolled, and the profile covers today. The QR is shown full-screen with the total and a "Expires in 2 h" note. After 2 h it has to be re-issued. The check shows "Guest paying (offline)" until sync. The fragment and token are never logged. | Card data stays in Stripe on the guest's phone (SAQ C boundary). The POS never sees a card. |
+| S14-7 | **Mismatch:** a claim that would become RECONCILED, but whose signed total ≠ the server's total for that check, becomes `MISMATCH` instead. The V1 status check already allows it, so no migration is needed. This happens in both places that reconcile: at ORDER_PLACED sync (moved to after the lines are inserted, since the total is unknown before) and in the webhook. Only the check ID is logged, and whatever was paid is kept. | Gives the owner something to look at instead of silence. Refunds stay manual. |
+
+### 19.2 RED tests first
+- **Backend:**
+  - `TaxEngineTest` reads the shared vectors.
+  - `TaxProfileIT`: own location only, 401 without a device, rules windowed to +7 days.
+  - `OfflineClaimIT`: a paid claim with a different total → MISMATCH at sync; a matching one → RECONCILED; a claim paid after sync with a different total → MISMATCH.
+- **Android:**
+  - `TaxEngineKtTest` (the same vectors).
+  - `ClaimDraftsTest`: builds a draft from Room lines and the profile; digest order; fails closed on a missing rule.
+  - `PayCodeGateTest`: offline + enrolled + profile covers today → show; otherwise → hide.
+
+### 19.3 Not in Slice 14
+Split shares paid by claim; service charges on POS orders; claim refunds; checking the lines digest on the server.
+
+### 19.4 Results (2026-11-27)
+- **Built:**
+  - Backend: `GET /api/v1/locations/{id}/tax-profile` and `payment/ClaimReconciler` (used both at ORDER_PLACED sync and in the webhook).
+  - Android: the `domain/TaxEngine.kt` port; `payment/ClaimDrafts` and `PayCodeGate`; the tax profile stored in Room v5 with the menu.
+  - On screen: the Check card shows "Show pay code" when the bill is offline, which opens a full-screen QR with the total and its expiry time.
+- **Changed from the plan:**
+  - The tax profile row also stores the device ID from `/devices/me`. The claim needs the signer's ID, and the phone had no other offline copy of it.
+  - The digest leaves out option IDs (S14-5 updated). Room doesn't keep them, and `unitCents` already includes their prices.
+  - `PAY_BASE_URL` is a build setting (debug override `-Psquaretoast.localPayUrl`, https only).
+  - There is no lasting "Guest paying (offline)" label on the check yet. The QR dialog says who pays and until when.
+- **Existing test changed:** `OfflineClaimIT.aClaimIsPaidOnlyOnceEverythingItOwesHasSettled` now expects `MISMATCH`, not `RECONCILED`. Its synced check (one burger, $16.09) never matched the signed $42.90, which is exactly what S14-7 flags.
+- **Audit (Sonnet):** one finding, that the digest didn't match the plan text. Fixed by updating the plan. Everything else passed:
+  - the Kotlin engine matches the Java one;
+  - the claim total equals `CheckBalance.owed`;
+  - the reconcile order is safe under the claim row lock;
+  - no other location's profile can be read or used.
+- **Security review:**
+  - The profile is device-auth, own location only, and holds no secrets.
+  - Claims are signed with the enrolled Keystore key and a random nonce.
+  - The claim rides only in the URL fragment and is never logged; the reconciler logs only the check ID.
+  - No card data touches the POS.
+  - A wrong phone total can overcharge a guest, but it is flagged as MISMATCH. Refunds stay manual.
+- **Checks:**
+  - `:backend:check` passes, and the full integration suite passes (182 tests).
+  - Shared tax vectors: 18 cases, run on both engines.
+  - Android: 159 tests, lint and assemble pass.
+- **Verified on the Fold5:**
+  1. With the local server stopped, an order for 2× Fries was placed.
+  2. The Check card showed "Show pay code", and the QR said "Scan to pay $11.80" ($11.00 + 7.25% = 79.75¢, rounded to 80¢), valid for 2 h.
+  3. After the server restarted, the order synced and the server's bill read Tax $0.80, Due $11.80, the same as the pay code.
+  4. Fix found on the phone: the New order button covered the Check card's last button. The list now ends with 96 dp of space.
+- **Not verified:** a guest scanning and paying a pay code end to end (needs Stripe test keys).
+- **Follow-up:** a v4→v5 Room migration test (keeps orders and options, starts with no tax profile). Android 160 tests pass.
+
+### 19.5 Fresh review of slices 11–14 (2026-11-27)
+- **Fixed (TDD, OfflineClaimIT +2):**
+  - **Refused paid order.** An ORDER_PLACED refused at sync (sold out, …) whose check already has a paid, or paying, claim now flags that claim `MISMATCH`. Before, the money was silently left with no check.
+  - **Tax rule missing.** If the server can't tax a claim's check (no rule), the webhook no longer fails, which would have left Stripe retrying forever with the payment never SUCCEEDED. The claim is flagged instead.
+  - **Webhook order.** The webhook now publishes `check` as its last step: after the Stripe fee call and after the claim row lock. Before, it held the location-wide lock during a network call, and took locks in the reverse order of sync, which could deadlock.
+- **Open (need a decision):**
+  - **Tax date.** The server taxes by "today" at reconcile, not the sale date. A rate change at midnight between signing and sync flags a false MISMATCH. Fix: carry the device's sale time in ORDER_PLACED.
+  - **Repricing.** Sync reprices lines from the current menu, and the claim charges the signed total. A price change while offline means MISMATCH (flagged, not prevented).
+  - **Gate signal.** The pay-code gate uses "the last bill load failed" as its offline signal, not live connectivity.
+  - **Guest orders.** Accepted guest checks drop off the POS after 12 h. A guest order with an 86'd item can't be accepted or rejected.
+  - ~~Idle streams reconnect every 2 minutes~~ — fixed: the server sends an SSE comment heartbeat every 25 s (`squaretoast.realtime.heartbeat`); SseHeartbeatIT.
+  - **Bigger question.** Should an offline order ever be refused for stock at all? The food was already served.
+- **Checked against outside evidence:**
+  - Stripe Terminal's offline mode doesn't support Tap to Pay, which matches CLAUDE.md.
+  - Bluetooth readers can store and forward offline payments, but only with client-side PaymentIntents. Our PaymentIntents are created on the server, so that path isn't built.
+  - Toast and Square both store card payments offline, with the merchant carrying the decline risk. QR pay-at-table avoids that risk but needs the guest's own data connection.
+- **Checks:**
+  - `:backend:check` passes.
+  - Integration: 184 tests. `SseRealtimeIT`'s 100 ms check failed once while the PC was busy (102 ms) and passed twice when run alone.

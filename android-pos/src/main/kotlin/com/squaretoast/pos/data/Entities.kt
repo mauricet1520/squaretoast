@@ -106,3 +106,16 @@ data class ModifierOptionEntity(
     val available: Boolean,
     val position: Int,
 )
+
+/** Slice 14: one row, the location's tax setup as fetched, so an offline check can be totalled (plan S14-3). */
+@Entity(tableName = "tax_profile")
+data class TaxProfileEntity(
+    @PrimaryKey val id: Int = 0,
+    val locationId: String,
+    /** The enrolled device that fetched it: the claim's signer, known without the network. */
+    val deviceId: String,
+    val json: String,
+    val fetchedAt: Long,
+) {
+    fun profile(): com.squaretoast.pos.sync.TaxProfile = kotlinx.serialization.json.Json.decodeFromString(json)
+}

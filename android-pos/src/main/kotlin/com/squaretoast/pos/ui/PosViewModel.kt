@@ -275,20 +275,17 @@ class PosViewModel @Inject constructor(
     val accepting: StateFlow<Set<String>> = _accepting.asStateFlow()
     private var guestJob: Job? = null
     private var liveJob: Job? = null
-    private var liveRefresh: Job? = null
 
     /** Slice 13: while the POS is on screen, refresh guest orders (and an open guest bill) when the cloud says so. */
     fun startLive() {
         if (liveJob?.isActive == true) return
         liveJob = viewModelScope.launch {
-            com.squaretoast.pos.sync.LiveEvents(cloud).run {
-                liveRefresh?.cancel() // a burst of events becomes one refresh
-                liveRefresh = launch {
-                    kotlinx.coroutines.delay(300)
-                    loadGuestOrders()
-                    if (_guestCheck.value != null && !_charging.value) loadBill()
-                }
+            // Child of the live job: stopLive() also drops a refresh that is still waiting.
+            val refresh = com.squaretoast.pos.sync.Debouncer(this, 300) {
+                loadGuestOrders()
+                if (com.squaretoast.pos.sync.LiveRefreshRules.reloadBill(_guestCheck.value, _charging.value)) loadBill()
             }
+            com.squaretoast.pos.sync.LiveEvents(cloud).run { refresh.poke() }
         }
     }
 
@@ -460,6 +457,42 @@ class PosViewModel @Inject constructor(
         hub.tokens.rotate() // a new shift needs a new pairing
         _hubUrl.value = null
     }
+
+    // ---- Slice 14: offline QR pay code (plan S14-6). The guest pays on their own phone; the POS never sees a card.
+
+    data class PayCode(val url: String, val totalCents: Long, val currency: String, val expiresAtEpochSecond: Long)
+
+    private val _payCode = MutableStateFlow<PayCode?>(null)
+    val payCode: StateFlow<PayCode?> = _payCode.asStateFlow()
+
+    fun showPayCode() = viewModelScope.launch {
+        val orderId = selected.value ?: return@launch // a guest QR check is paid from the table QR, online
+        val stored = db.menuDao().taxProfile()
+        val profile = stored?.let { runCatching { it.profile() }.getOrNull() }
+        val today = profile?.let { p -> runCatching { java.time.LocalDate.now(java.time.ZoneId.of(p.timezone)) }.getOrNull() }
+        if (stored == null || profile == null || today == null ||
+            !com.squaretoast.pos.payment.PayCodeGate.allowed(_bill.value !is BillView.Offline, enrolled.value, profile, today)) {
+            _message.value = "No pay code: the tax rules on this phone are missing or too old. Connect once to refresh them."
+            return@launch
+        }
+        val order = db.orderDao().order(orderId) ?: return@launch
+        val draft = com.squaretoast.pos.payment.ClaimDrafts.draft(order, db.orderDao().lines(orderId), profile, stored.deviceId, today)
+        if (draft == null) {
+            _message.value = "No pay code: an item on this check has no tax rule on this phone."
+            return@launch
+        }
+        val signed = runCatching {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                com.squaretoast.pos.payment.OfflineClaimSigner(KeystoreClaimKey.loadOrCreate(), java.time.Clock.systemUTC()) {
+                    UUID.randomUUID().toString()
+                }.issue(draft)
+            }
+        }.getOrElse { if (it is CancellationException) throw it; _message.value = "Couldn't sign the pay code."; return@launch }
+        _payCode.value = PayCode(signed.qrUrl(com.squaretoast.pos.BuildConfig.PAY_BASE_URL), draft.totalCents, draft.currency,
+            signed.claim.expiresAtEpochSecond)
+    }
+
+    fun closePayCode() { _payCode.value = null }
 
     fun dismissMessage() { _message.value = null }
 

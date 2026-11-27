@@ -172,4 +172,35 @@ class CloudApiTest {
         val e = assertThrows(RejectedBatchException::class.java) { runBlocking { api.bill(UUID.randomUUID()) } }
         assertEquals(404, e.status)
     }
+
+    // ---- Slice 14: the tax profile for offline pay codes
+
+    @Test
+    fun taxProfileIsTheDevicesOwnLocationWithItsToken() = runBlocking {
+        val api = api("tok") {
+            json("""{"locationId":"l-1","stateCode":"CA","currency":"USD","timezone":"America/Los_Angeles",
+                "ca8080Applies":false,"caSeparateAccountingElected":false,"mandatoryServiceChargeTaxable":true,
+                "validFrom":"2026-11-27","validUntil":"2026-12-04",
+                "rules":[{"jurisdictionCode":"CA-SF","taxCategory":"FOOD","channel":null,"ratePpm":86250,
+                          "effectiveFrom":"2026-01-01","effectiveTo":null}],
+                "items":[{"menuItemId":"i-1","taxCategory":"FOOD","temp":"HOT"}]}""")
+        }
+
+        val p = api.taxProfile("l-1")
+
+        val req = requests.single()
+        assertEquals("https://api.test/api/v1/locations/l-1/tax-profile", req.url.toString())
+        assertEquals("Bearer tok", req.headers[HttpHeaders.Authorization])
+        assertEquals("CA", p.stateCode)
+        assertEquals(86_250, p.rules.single().ratePpm)
+        assertNull(p.rules.single().channel)
+        assertEquals(ItemTax("i-1", "FOOD", "HOT"), p.items.single())
+    }
+
+    @Test
+    fun taxProfileRefusesAPathLikeLocation() {
+        val api = api("tok") { json("{}") }
+        assertThrows(IllegalArgumentException::class.java) { runBlocking { api.taxProfile("../admin") } }
+        assertTrue(requests.isEmpty())
+    }
 }

@@ -6,8 +6,10 @@ import com.squaretoast.pos.data.MenuItemEntity
 import com.squaretoast.pos.data.MenuMetaEntity
 import com.squaretoast.pos.data.ModifierGroupEntity
 import com.squaretoast.pos.data.ModifierOptionEntity
+import com.squaretoast.pos.data.TaxProfileEntity
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import java.time.Clock
 
 @Serializable
@@ -39,6 +41,7 @@ data class ModifierOptionDto(val id: String, val name: String, val priceDeltaCen
 interface MenuApi {
     suspend fun me(): DeviceInfo
     suspend fun menu(locationId: String): MenuDto
+    suspend fun taxProfile(locationId: String): TaxProfile
 }
 
 /** Keeps the on-device menu snapshot fresh. A failed fetch keeps the last good snapshot, so ordering works offline. */
@@ -47,10 +50,10 @@ class MenuSync(private val db: AppDatabase, private val api: MenuApi, private va
     /** True if a new snapshot was stored. */
     suspend fun refresh(): Boolean {
         val fetched = runCatching {
-            val location = api.me().locationId // the device's own location, never one chosen on screen
-            location to api.menu(location)
+            val me = api.me() // the device's own location, never one chosen on screen
+            Triple(me.locationId, me.deviceId, api.menu(me.locationId))
         }.getOrElse { if (it is CancellationException) throw it else return false }
-        val (location, menu) = fetched
+        val (location, deviceId, menu) = fetched
         val items = menu.items.mapIndexed { i, m ->
             MenuItemEntity(m.id, m.name, m.priceCents, m.currency, m.available, m.modifierGroups.any { it.minSelect > 0 }, i)
         }
@@ -68,7 +71,19 @@ class MenuSync(private val db: AppDatabase, private val api: MenuApi, private va
             db.menuDao().insertGroups(groups)
             db.menuDao().insertOptions(options)
             db.menuDao().putMeta(MenuMetaEntity(locationId = location, fetchedAt = clock.millis()))
+            // Another location's rules must never price this one's checks, even briefly.
+            if (db.menuDao().taxProfile()?.locationId != location) db.menuDao().clearTaxProfile()
         }
+        refreshTaxProfile(location, deviceId)
         return true
+    }
+
+    /** Slice 14: best effort. A failure keeps the last good profile; the pay code checks it still covers today. */
+    private suspend fun refreshTaxProfile(location: String, deviceId: String) {
+        val profile = runCatching { api.taxProfile(location) }
+            .getOrElse { if (it is CancellationException) throw it else return }
+        if (profile.locationId != location) return
+        db.menuDao().putTaxProfile(TaxProfileEntity(locationId = location, deviceId = deviceId, json = Json.encodeToString(profile),
+            fetchedAt = clock.millis()))
     }
 }

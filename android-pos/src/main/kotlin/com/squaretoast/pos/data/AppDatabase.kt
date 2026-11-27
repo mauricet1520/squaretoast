@@ -52,8 +52,9 @@ interface OutboxDao {
     entities = [
         OrderEntity::class, CourseEntity::class, OrderLineEntity::class, OutboxEntity::class,
         MenuItemEntity::class, MenuMetaEntity::class, ModifierGroupEntity::class, ModifierOptionEntity::class,
+        TaxProfileEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -101,6 +102,16 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        val MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+        /** v5: the tax profile for offline pay codes (plan 19). Adds a table only. */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `tax_profile` (`id` INTEGER NOT NULL, `locationId` TEXT NOT NULL, `deviceId` TEXT NOT NULL, " +
+                        "`json` TEXT NOT NULL, `fetchedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+                )
+            }
+        }
+
+        val MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
     }
 }

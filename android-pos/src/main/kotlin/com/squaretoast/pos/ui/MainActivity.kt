@@ -116,6 +116,8 @@ private fun PosScreen(vm: PosViewModel) {
         )
     }
     message?.let { MessageDialog(it, vm::dismissMessage) }
+    val payCode by vm.payCode.collectAsState()
+    payCode?.let { PayCodeDialog(it, vm::closePayCode) }
 
     // Keep the saved menu (and its 86s) current: refresh whenever the POS comes back to the front.
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -152,7 +154,7 @@ private fun PosScreen(vm: PosViewModel) {
     ) { padding ->
         LazyColumn(
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = padding.calculateTopPadding() + 4.dp,
-                bottom = padding.calculateBottomPadding() + 24.dp),
+                bottom = padding.calculateBottomPadding() + 96.dp), // room to scroll past the New order button
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             item {
@@ -254,7 +256,7 @@ private fun HubPanel(url: String?, start: () -> Unit, stop: () -> Unit) {
     }
 }
 
-private fun qrBitmap(text: String, size: Int = 512): Bitmap {
+internal fun qrBitmap(text: String, size: Int = 512): Bitmap {
     val m = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, size, size)
     val pixels = IntArray(size * size) { i -> if (m[i % size, i / size]) Color.BLACK else Color.WHITE }
     return Bitmap.createBitmap(pixels, size, size, Bitmap.Config.ARGB_8888)
@@ -296,4 +298,28 @@ private fun EnrollScreen(vm: PosViewModel) {
             Button(onClick = { vm.enroll(code) }, enabled = code.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Enroll") }
         }
     }
+}
+
+/** Slice 14: the signed pay code, big enough to scan from across a table. The claim rides in the URL fragment only. */
+@Composable
+private fun PayCodeDialog(code: PosViewModel.PayCode, close: () -> Unit) {
+    val qr = remember(code.url) { qrBitmap(code.url, 720) }
+    val until = remember(code.expiresAtEpochSecond) {
+        java.time.format.DateTimeFormatter.ofPattern("h:mm a")
+            .format(java.time.Instant.ofEpochSecond(code.expiresAtEpochSecond).atZone(java.time.ZoneId.systemDefault()))
+    }
+    AlertDialog(
+        onDismissRequest = close,
+        confirmButton = { TextButton(onClick = close) { Text("Done") } },
+        title = { Text("Scan to pay ${money(code.totalCents)}") },
+        text = {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Surface(color = androidx.compose.ui.graphics.Color.White, shape = MaterialTheme.shapes.medium) {
+                    Image(qr.asImageBitmap(), contentDescription = "Pay code QR", modifier = Modifier.padding(12.dp).size(260.dp))
+                }
+                Text("The guest pays on their own phone. The tip is theirs to choose. Works until $until.",
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+    )
 }

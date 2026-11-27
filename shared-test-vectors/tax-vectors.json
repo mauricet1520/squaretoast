@@ -1,0 +1,172 @@
+{
+  "description": "Sales tax for one check (plan §4, S14-2). Rate per category = sum over jurisdictions; a channel rule replaces that jurisdiction's any-channel rule; CA cold food to go is exempt unless 80/80 applies without separate accounting; tax is rounded half-up once per check. Rates are ppm, amounts are cents. 'expected': null means no effective rule (fail closed). Tips are always 0 here: they are never taxed.",
+  "cases": [
+    {
+      "name": "CA hot food dine-in",
+      "context": {"state": "CA", "date": "2026-11-17", "channel": "DINE_IN", "ca8080": false, "caSeparate": false, "mandatoryTaxable": true},
+      "rules": [{"state": "CA", "jurisdiction": "CA-SF", "category": "FOOD", "channel": null, "ratePpm": 86250, "from": "2026-01-01", "to": null}],
+      "lines": [{"category": "FOOD", "temp": "HOT", "cents": 1000}],
+      "charges": [],
+      "expected": {"taxable": 1000, "exempt": 0, "tax": 86}
+    },
+    {
+      "name": "CA cold food to go is exempt",
+      "context": {"state": "CA", "date": "2026-11-17", "channel": "TAKEOUT", "ca8080": false, "caSeparate": false, "mandatoryTaxable": true},
+      "rules": [{"state": "CA", "jurisdiction": "CA-SF", "category": "FOOD", "channel": null, "ratePpm": 86250, "from": "2026-01-01", "to": null}],
+      "lines": [{"category": "FOOD", "temp": "COLD", "cents": 1000}],
+      "charges": [],
+      "expected": {"taxable": 0, "exempt": 1000, "tax": 0}
+    },
+    {
+      "name": "CA cold food to go is taxed under 80/80",
+      "context": {"state": "CA", "date": "2026-11-17", "channel": "DELIVERY", "ca8080": true, "caSeparate": false, "mandatoryTaxable": true},
+      "rules": [{"state": "CA", "jurisdiction": "CA-SF", "category": "FOOD", "channel": null, "ratePpm": 86250, "from": "2026-01-01", "to": null}],
+      "lines": [{"category": "FOOD", "temp": "COLD", "cents": 1000}],
+      "charges": [],
+      "expected": {"taxable": 1000, "exempt": 0, "tax": 86}
+    },
+    {
+      "name": "CA 80/80 with separate accounting stays exempt",
+      "context": {"state": "CA", "date": "2026-11-17", "channel": "TAKEOUT", "ca8080": true, "caSeparate": true, "mandatoryTaxable": true},
+      "rules": [{"state": "CA", "jurisdiction": "CA-SF", "category": "FOOD", "channel": null, "ratePpm": 86250, "from": "2026-01-01", "to": null}],
+      "lines": [{"category": "FOOD", "temp": "COLD", "cents": 1000}],
+      "charges": [],
+      "expected": {"taxable": 0, "exempt": 1000, "tax": 0}
+    },
+    {
+      "name": "rounded once per check, not per line",
+      "context": {"state": "CA", "date": "2026-11-17", "channel": "DINE_IN", "ca8080": false, "caSeparate": false, "mandatoryTaxable": true},
+      "rules": [{"state": "CA", "jurisdiction": "CA-SF", "category": "FOOD", "channel": null, "ratePpm": 86250, "from": "2026-01-01", "to": null}],
+      "lines": [{"category": "FOOD", "temp": "HOT", "cents": 1000}, {"category": "FOOD", "temp": "HOT", "cents": 1000}],
+      "charges": [],
+      "expected": {"taxable": 2000, "exempt": 0, "tax": 173}
+    },
+    {
+      "name": "half a cent rounds up",
+      "context": {"state": "TX", "date": "2026-11-17", "channel": "DINE_IN", "ca8080": false, "caSeparate": false, "mandatoryTaxable": false},
+      "rules": [{"state": "TX", "jurisdiction": "TX-STATE", "category": "FOOD", "channel": null, "ratePpm": 50000, "from": "2026-01-01", "to": null}],
+      "lines": [{"category": "FOOD", "temp": "NA", "cents": 10}],
+      "charges": [],
+      "expected": {"taxable": 10, "exempt": 0, "tax": 1}
+    },
+    {
+      "name": "just under half a cent rounds down",
+      "context": {"state": "TX", "date": "2026-11-17", "channel": "DINE_IN", "ca8080": false, "caSeparate": false, "mandatoryTaxable": false},
+      "rules": [{"state": "TX", "jurisdiction": "TX-STATE", "category": "FOOD", "channel": null, "ratePpm": 50000, "from": "2026-01-01", "to": null}],
+      "lines": [{"category": "FOOD", "temp": "NA", "cents": 9}],
+      "charges": [],
+      "expected": {"taxable": 9, "exempt": 0, "tax": 0}
+    },
+    {
+      "name": "jurisdictions add up; a takeout rule replaces the city's any-channel rule",
+      "context": {"state": "NY", "date": "2026-11-17", "channel": "TAKEOUT", "ca8080": false, "caSeparate": false, "mandatoryTaxable": true},
+      "rules": [
+        {"state": "NY", "jurisdiction": "NY-STATE", "category": "FOOD", "channel": null, "ratePpm": 40000, "from": "2026-01-01", "to": null},
+        {"state": "NY", "jurisdiction": "NY-CITY", "category": "FOOD", "channel": null, "ratePpm": 48750, "from": "2026-01-01", "to": null},
+        {"state": "NY", "jurisdiction": "NY-CITY", "category": "FOOD", "channel": "TAKEOUT", "ratePpm": 20000, "from": "2026-01-01", "to": null}
+      ],
+      "lines": [{"category": "FOOD", "temp": "NA", "cents": 1000}],
+      "charges": [],
+      "expected": {"taxable": 1000, "exempt": 0, "tax": 60}
+    },
+    {
+      "name": "the same rules dine-in use the any-channel city rate",
+      "context": {"state": "NY", "date": "2026-11-17", "channel": "DINE_IN", "ca8080": false, "caSeparate": false, "mandatoryTaxable": true},
+      "rules": [
+        {"state": "NY", "jurisdiction": "NY-STATE", "category": "FOOD", "channel": null, "ratePpm": 40000, "from": "2026-01-01", "to": null},
+        {"state": "NY", "jurisdiction": "NY-CITY", "category": "FOOD", "channel": null, "ratePpm": 48750, "from": "2026-01-01", "to": null},
+        {"state": "NY", "jurisdiction": "NY-CITY", "category": "FOOD", "channel": "TAKEOUT", "ratePpm": 20000, "from": "2026-01-01", "to": null}
+      ],
+      "lines": [{"category": "FOOD", "temp": "NA", "cents": 1000}],
+      "charges": [],
+      "expected": {"taxable": 1000, "exempt": 0, "tax": 89}
+    },
+    {
+      "name": "a rate change takes effect on its start date",
+      "context": {"state": "TX", "date": "2026-11-17", "channel": "DINE_IN", "ca8080": false, "caSeparate": false, "mandatoryTaxable": false},
+      "rules": [
+        {"state": "TX", "jurisdiction": "TX-STATE", "category": "FOOD", "channel": null, "ratePpm": 50000, "from": "2026-01-01", "to": "2026-11-17"},
+        {"state": "TX", "jurisdiction": "TX-STATE", "category": "FOOD", "channel": null, "ratePpm": 60000, "from": "2026-11-17", "to": null}
+      ],
+      "lines": [{"category": "FOOD", "temp": "NA", "cents": 1000}],
+      "charges": [],
+      "expected": {"taxable": 1000, "exempt": 0, "tax": 60}
+    },
+    {
+      "name": "the old rate applies the day before",
+      "context": {"state": "TX", "date": "2026-11-16", "channel": "DINE_IN", "ca8080": false, "caSeparate": false, "mandatoryTaxable": false},
+      "rules": [
+        {"state": "TX", "jurisdiction": "TX-STATE", "category": "FOOD", "channel": null, "ratePpm": 50000, "from": "2026-01-01", "to": "2026-11-17"},
+        {"state": "TX", "jurisdiction": "TX-STATE", "category": "FOOD", "channel": null, "ratePpm": 60000, "from": "2026-11-17", "to": null}
+      ],
+      "lines": [{"category": "FOOD", "temp": "NA", "cents": 1000}],
+      "charges": [],
+      "expected": {"taxable": 1000, "exempt": 0, "tax": 50}
+    },
+    {
+      "name": "other states' rules never apply",
+      "context": {"state": "TX", "date": "2026-11-17", "channel": "DINE_IN", "ca8080": false, "caSeparate": false, "mandatoryTaxable": false},
+      "rules": [
+        {"state": "TX", "jurisdiction": "TX-STATE", "category": "FOOD", "channel": null, "ratePpm": 62500, "from": "2026-01-01", "to": null},
+        {"state": "CA", "jurisdiction": "CA-SF", "category": "FOOD", "channel": null, "ratePpm": 86250, "from": "2026-01-01", "to": null}
+      ],
+      "lines": [{"category": "FOOD", "temp": "NA", "cents": 1000}],
+      "charges": [],
+      "expected": {"taxable": 1000, "exempt": 0, "tax": 63}
+    },
+    {
+      "name": "no rule for a category fails closed",
+      "context": {"state": "TX", "date": "2026-11-17", "channel": "DINE_IN", "ca8080": false, "caSeparate": false, "mandatoryTaxable": false},
+      "rules": [{"state": "TX", "jurisdiction": "TX-STATE", "category": "FOOD", "channel": null, "ratePpm": 62500, "from": "2026-01-01", "to": null}],
+      "lines": [{"category": "ALCOHOL", "temp": "NA", "cents": 800}],
+      "charges": [],
+      "expected": null
+    },
+    {
+      "name": "an expired rule fails closed",
+      "context": {"state": "TX", "date": "2026-11-17", "channel": "DINE_IN", "ca8080": false, "caSeparate": false, "mandatoryTaxable": false},
+      "rules": [{"state": "TX", "jurisdiction": "TX-STATE", "category": "FOOD", "channel": null, "ratePpm": 62500, "from": "2026-01-01", "to": "2026-11-01"}],
+      "lines": [{"category": "FOOD", "temp": "NA", "cents": 1000}],
+      "charges": [],
+      "expected": null
+    },
+    {
+      "name": "an empty check owes no tax",
+      "context": {"state": "TX", "date": "2026-11-17", "channel": "DINE_IN", "ca8080": false, "caSeparate": false, "mandatoryTaxable": false},
+      "rules": [],
+      "lines": [],
+      "charges": [],
+      "expected": {"taxable": 0, "exempt": 0, "tax": 0}
+    },
+    {
+      "name": "a taxable mandatory charge is taxed at the service charge rate",
+      "context": {"state": "CA", "date": "2026-11-17", "channel": "DINE_IN", "ca8080": false, "caSeparate": false, "mandatoryTaxable": true},
+      "rules": [
+        {"state": "CA", "jurisdiction": "CA-SF", "category": "FOOD", "channel": null, "ratePpm": 86250, "from": "2026-01-01", "to": null},
+        {"state": "CA", "jurisdiction": "CA-SF", "category": "SERVICE_CHARGE", "channel": null, "ratePpm": 86250, "from": "2026-01-01", "to": null}
+      ],
+      "lines": [{"category": "FOOD", "temp": "HOT", "cents": 1000}],
+      "charges": [{"kind": "MANDATORY", "cents": 500, "deliveryFeeTaxable": false}],
+      "expected": {"taxable": 1500, "exempt": 0, "tax": 129}
+    },
+    {
+      "name": "an untaxed mandatory charge is exempt",
+      "context": {"state": "CA", "date": "2026-11-17", "channel": "DINE_IN", "ca8080": false, "caSeparate": false, "mandatoryTaxable": false},
+      "rules": [{"state": "CA", "jurisdiction": "CA-SF", "category": "FOOD", "channel": null, "ratePpm": 86250, "from": "2026-01-01", "to": null}],
+      "lines": [{"category": "FOOD", "temp": "HOT", "cents": 1000}],
+      "charges": [{"kind": "AUTO_GRATUITY", "cents": 500, "deliveryFeeTaxable": false}],
+      "expected": {"taxable": 1000, "exempt": 500, "tax": 86}
+    },
+    {
+      "name": "a taxable delivery fee",
+      "context": {"state": "CA", "date": "2026-11-17", "channel": "DELIVERY", "ca8080": false, "caSeparate": false, "mandatoryTaxable": false},
+      "rules": [
+        {"state": "CA", "jurisdiction": "CA-SF", "category": "FOOD", "channel": null, "ratePpm": 86250, "from": "2026-01-01", "to": null},
+        {"state": "CA", "jurisdiction": "CA-SF", "category": "SERVICE_CHARGE", "channel": null, "ratePpm": 86250, "from": "2026-01-01", "to": null}
+      ],
+      "lines": [{"category": "FOOD", "temp": "HOT", "cents": 1000}],
+      "charges": [{"kind": "DELIVERY_FEE", "cents": 300, "deliveryFeeTaxable": true}],
+      "expected": {"taxable": 1300, "exempt": 0, "tax": 112}
+    }
+  ]
+}

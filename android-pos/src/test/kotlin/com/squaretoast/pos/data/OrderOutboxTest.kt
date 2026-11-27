@@ -15,6 +15,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -190,5 +191,13 @@ class OrderOutboxTest {
         val lines = Json.parseToJsonElement(db.outboxDao().all().single().payloadJson).jsonObject["lines"]!!.jsonArray
         assertEquals(listOf("o-med", "o-noonion"), lines[0].jsonObject["optionIds"]!!.jsonArray.map { it.jsonPrimitive.content })
         assertEquals(0, lines[1].jsonObject["optionIds"]!!.jsonArray.size)
+    }
+
+    @Test
+    fun orderPlacedCarriesWhenItWasRungUp() = runBlocking {
+        repo.placeOrder(order())
+
+        val payload = kotlinx.serialization.json.Json.parseToJsonElement(db.outboxDao().all().single().payloadJson)
+        assertEquals(clock.millis(), payload.jsonObject["placedAt"]!!.jsonPrimitive.long) // plan 19.6: tax by date of sale
     }
 }

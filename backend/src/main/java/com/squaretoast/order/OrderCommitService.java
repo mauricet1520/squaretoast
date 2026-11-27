@@ -9,6 +9,7 @@ import com.squaretoast.menu.AvailabilityEvents;
 import com.squaretoast.menu.LocationMenu;
 import com.squaretoast.menu.MenuRepository;
 import com.squaretoast.realtime.RealtimePublisher;
+import com.squaretoast.realtime.Topics;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -82,7 +83,15 @@ public class OrderCommitService {
             realtime.publish(location, AvailabilityEvents.TOPIC,
                     () -> AvailabilityEvents.payload(menus.load(location).orElseThrow(), demand.keySet()));
         }
+        boolean guestOrder = jdbc.sql("select origin_device_id is null from orders where id = ?")
+                .params(orderId).query(Boolean.class).single();
+        if (guestOrder) { // Slice 13: every POS drops its Accept button and shows the new check
+            realtime.publish(location, Topics.ORDER, () -> new Accepted(orderId, "ACCEPTED"));
+        }
     }
+
+    /** What the POS and kitchen hear when staff accept a guest QR order. */
+    record Accepted(UUID orderId, String status) {}
 
     private List<LineDemand> lines(UUID orderId, LocationMenu menu) {
         record Line(UUID id, UUID menuItemId, int qty) {}

@@ -2,19 +2,26 @@ package com.squaretoast.pos.sync
 
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.plugins.timeout
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.bearerAuth
+import io.ktor.client.request.accept
 import io.ktor.client.request.get
+import io.ktor.client.request.parameter
+import io.ktor.client.request.prepareGet
 import io.ktor.client.request.post
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.request
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
+import io.ktor.utils.io.readUTF8Line
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.util.Base64
@@ -67,6 +74,7 @@ class CloudApi(
 
     private val http = engine.config {
         install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+        install(HttpTimeout)
     }
 
     /** Public endpoint: the one-time code is the credential. */
@@ -116,6 +124,36 @@ class CloudApi(
         post("/api/v1/orders/$orderId/commit", Unit)
     }
 
+
+    /** Slice 13: a one-time ticket for the location's live stream (the stream itself takes no bearer token). */
+    suspend fun streamTicket(): String = post("/api/v1/kds/stream-tickets", Unit).body<StreamTicket>().ticket
+
+    /**
+     * Slice 13: opens the live stream with [ticket], calls [onOpen] once the server accepts it, then hands each event
+     * to [onEvent] until the stream ends. The server sends nothing while idle, so a quiet stream times out after
+     * [STREAM_IDLE_MS] and the caller reconnects (cheap, and it notices a dead Wi-Fi link).
+     */
+    suspend fun liveStream(ticket: String, lastEventId: Long?, onOpen: suspend () -> Unit, onEvent: suspend (SseEvent) -> Unit) {
+        http.prepareGet(baseUrl + "/api/v1/kds/stream") {
+            parameter("ticket", ticket)
+            lastEventId?.let { parameter("lastEventId", it) }
+            accept(ContentType.Text.EventStream)
+            timeout { socketTimeoutMillis = STREAM_IDLE_MS }
+        }.execute { response ->
+            if (!response.status.isSuccess()) throw RejectedBatchException(response.status.value)
+            onOpen()
+            val channel = response.bodyAsChannel()
+            val parser = SseParser()
+            while (true) {
+                val line = channel.readUTF8Line() ?: break
+                parser.line(line)?.let { onEvent(it) }
+            }
+        }
+    }
+
+    companion object {
+        const val STREAM_IDLE_MS = 120_000L
+    }
     suspend fun connectionToken(): String = post("/api/v1/terminal/connection_token", Unit).body<ConnectionToken>().secret
 
     suspend fun startCardPayment(checkId: UUID, idempotencyKey: UUID, method: String, tipCents: Long): StartedCardPayment {
@@ -185,3 +223,6 @@ data class GuestOrder(
 
 @Serializable
 private data class GuestOrderList(val orders: List<GuestOrder>)
+
+@Serializable
+private data class StreamTicket(val ticket: String, val expiresInSeconds: Int = 60)

@@ -5,6 +5,8 @@ import com.squaretoast.domain.money.CurrencyCode;
 import com.squaretoast.domain.money.Money;
 import com.squaretoast.domain.payment.PaymentGatewayPort;
 import com.squaretoast.ledger.LedgerService;
+import com.squaretoast.realtime.RealtimePublisher;
+import com.squaretoast.realtime.Topics;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
@@ -54,15 +56,22 @@ public class StripeWebhookService {
     private final JsonMapper json;
     private final PaymentGatewayPort gateway;
     private final LedgerService ledger;
+    private final RealtimePublisher realtime;
 
-    StripeWebhookService(JdbcClient db, JsonMapper json, PaymentGatewayPort gateway, LedgerService ledger) {
+    StripeWebhookService(JdbcClient db, JsonMapper json, PaymentGatewayPort gateway, LedgerService ledger,
+                         RealtimePublisher realtime) {
         this.db = db;
         this.json = json;
         this.gateway = gateway;
         this.ledger = ledger;
+        this.realtime = realtime;
     }
 
-    private record LockedPayment(UUID id, long amountCents, long tipCents, long feeCents, String currency, UUID locationId) {}
+    private record LockedPayment(UUID id, UUID checkId, long amountCents, long tipCents, long feeCents, String currency,
+                                 UUID locationId) {}
+
+    /** Slice 13: only which check changed, for the authenticated stream; the POS re-reads the bill itself. */
+    record CheckChanged(UUID checkId) {}
 
     @Transactional
     public void handle(byte[] payload) {
@@ -98,7 +107,7 @@ public class StripeWebhookService {
             return;
         }
         Optional<LockedPayment> found = db.sql("""
-                select p.id, p.amount_cents, p.tip_cents, p.application_fee_cents, p.currency,
+                select p.id, p.check_id, p.amount_cents, p.tip_cents, p.application_fee_cents, p.currency,
                        coalesce(o.location_id, cl.location_id) as location_id
                 from payment p
                 left join guest_check c on c.id = p.check_id
@@ -107,7 +116,7 @@ public class StripeWebhookService {
                 where p.processor = 'STRIPE' and p.processor_intent_ref = ?
                 for update of p""")
                 .params(intentRef)
-                .query((rs, n) -> new LockedPayment(rs.getObject("id", UUID.class), rs.getLong("amount_cents"),
+                .query((rs, n) -> new LockedPayment(rs.getObject("id", UUID.class), rs.getObject("check_id", UUID.class), rs.getLong("amount_cents"),
                         rs.getLong("tip_cents"), rs.getLong("application_fee_cents"), rs.getString("currency"),
                         rs.getObject("location_id", UUID.class)))
                 .optional();
@@ -122,8 +131,11 @@ public class StripeWebhookService {
             return;
         }
         // A succeeded charge is money taken: record it even if the intent was marked failed after an earlier decline.
-        db.sql("update payment set status = 'SUCCEEDED' where id = ? and status in ('PENDING', 'REQUIRES_ACTION', 'FAILED', 'CANCELED')")
+        int settled = db.sql("update payment set status = 'SUCCEEDED' where id = ? and status in ('PENDING', 'REQUIRES_ACTION', 'FAILED', 'CANCELED')")
                 .params(p.id()).update();
+        if (settled > 0) { // first time only: a replayed or updated charge says nothing new
+            realtime.publish(p.locationId(), Topics.CHECK, () -> new CheckChanged(p.checkId()));
+        }
         // An offline claim is paid once what has settled under it and its synced check, tips aside, covers its
         // total. If the POS has already synced that check, the claim is reconciled at the same time.
         db.sql("""

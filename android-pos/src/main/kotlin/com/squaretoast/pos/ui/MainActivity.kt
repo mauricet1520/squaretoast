@@ -120,7 +120,13 @@ private fun PosScreen(vm: PosViewModel) {
     // Keep the saved menu (and its 86s) current: refresh whenever the POS comes back to the front.
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle) {
-        val observer = LifecycleEventObserver { _, e -> if (e == Lifecycle.Event.ON_RESUME) { vm.refreshMenu(); vm.loadGuestOrders() } }
+        val observer = LifecycleEventObserver { _, e ->
+            when (e) {
+                Lifecycle.Event.ON_RESUME -> { vm.refreshMenu(); vm.loadGuestOrders(); vm.startLive() }
+                Lifecycle.Event.ON_PAUSE -> vm.stopLive() // no open stream in the background
+                else -> {}
+            }
+        }
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }
     }

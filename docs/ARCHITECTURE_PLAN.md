@@ -1125,3 +1125,23 @@ Split shares paid by claim; service charges on POS orders; claim refunds; checki
   4. Fix found on the phone: the New order button covered the Check card's last button. The list now ends with 96 dp of space.
 - **Not verified:** a guest scanning and paying a pay code end to end (needs Stripe test keys).
 - **Follow-up:** a v4→v5 Room migration test (keeps orders and options, starts with no tax profile). Android 160 tests pass.
+
+### 19.5 Fresh review of slices 11–14 (2026-11-27)
+- **Fixed (TDD, OfflineClaimIT +2):**
+  - **Refused paid order.** An ORDER_PLACED refused at sync (sold out, …) whose check already has a paid, or paying, claim now flags that claim `MISMATCH`. Before, the money was silently left with no check.
+  - **Tax rule missing.** If the server can't tax a claim's check (no rule), the webhook no longer fails, which would have left Stripe retrying forever with the payment never SUCCEEDED. The claim is flagged instead.
+  - **Webhook order.** The webhook now publishes `check` as its last step: after the Stripe fee call and after the claim row lock. Before, it held the location-wide lock during a network call, and took locks in the reverse order of sync, which could deadlock.
+- **Open (need a decision):**
+  - **Tax date.** The server taxes by "today" at reconcile, not the sale date. A rate change at midnight between signing and sync flags a false MISMATCH. Fix: carry the device's sale time in ORDER_PLACED.
+  - **Repricing.** Sync reprices lines from the current menu, and the claim charges the signed total. A price change while offline means MISMATCH (flagged, not prevented).
+  - **Gate signal.** The pay-code gate uses "the last bill load failed" as its offline signal, not live connectivity.
+  - **Guest orders.** Accepted guest checks drop off the POS after 12 h. A guest order with an 86'd item can't be accepted or rejected.
+  - **Idle streams.** With no server heartbeat, idle live streams reconnect every 2 minutes.
+  - **Bigger question.** Should an offline order ever be refused for stock at all? The food was already served.
+- **Checked against outside evidence:**
+  - Stripe Terminal's offline mode doesn't support Tap to Pay, which matches CLAUDE.md.
+  - Bluetooth readers can store and forward offline payments, but only with client-side PaymentIntents. Our PaymentIntents are created on the server, so that path isn't built.
+  - Toast and Square both store card payments offline, with the merchant carrying the decline risk. QR pay-at-table avoids that risk but needs the guest's own data connection.
+- **Checks:**
+  - `:backend:check` passes.
+  - Integration: 184 tests. `SseRealtimeIT`'s 100 ms check failed once while the PC was busy (102 ms) and passed twice when run alone.

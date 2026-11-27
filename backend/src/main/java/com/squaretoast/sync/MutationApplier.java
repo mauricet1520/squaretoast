@@ -6,6 +6,7 @@ import com.squaretoast.domain.order.CourseState;
 import com.squaretoast.order.DeviceOrderService;
 import com.squaretoast.order.DeviceOrderService.PlacedLine;
 import com.squaretoast.order.OrderRejected;
+import com.squaretoast.payment.ClaimReconciler;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -56,11 +57,13 @@ class MutationApplier {
     private final JdbcClient db;
     private final TransactionTemplate tx;
     private final DeviceOrderService orders;
+    private final ClaimReconciler claims;
 
-    MutationApplier(JdbcClient db, PlatformTransactionManager txm, DeviceOrderService orders) {
+    MutationApplier(JdbcClient db, PlatformTransactionManager txm, DeviceOrderService orders, ClaimReconciler claims) {
         this.db = db;
         this.tx = new TransactionTemplate(txm);
         this.orders = orders;
+        this.claims = claims;
     }
 
     Result apply(DevicePrincipal device, Mutation m) {
@@ -89,6 +92,7 @@ class MutationApplier {
         } catch (LostRace e) {
             return prior(device, id).orElseThrow();
         } catch (OrderRejected e) {
+            flagRefusedClaim(device, m);
             return conflict(device, id, e.reason());
         } catch (DataIntegrityViolationException e) {
             return conflict(device, id, INVALID); // e.g. a client id that collides with an existing row
@@ -130,6 +134,22 @@ class MutationApplier {
         }
     }
 
+
+    /** A refused ORDER_PLACED leaves any offline claim for its check with money but no check: flag it (review fix). */
+    private void flagRefusedClaim(DevicePrincipal device, Mutation m) {
+        if (!"ORDER_PLACED".equals(m.type()) || m.payloadJson() == null) {
+            return;
+        }
+        try {
+            String checkId = JSON.readValue(m.payloadJson(), OrderPlaced.class).checkId();
+            if (checkId != null) {
+                UUID check = UUID.fromString(checkId);
+                tx.executeWithoutResult(s -> claims.orderRefused(check, device.locationId()));
+            }
+        } catch (JacksonException | IllegalArgumentException e) {
+            // an unreadable payload names no check, so no claim can hang on it
+        }
+    }
     private Result conflict(DevicePrincipal device, UUID id, String reason) {
         tx.executeWithoutResult(s -> db.sql("""
                 insert into processed_client_mutation(mutation_id, device_id, result, reason) values (?, ?, 'CONFLICT', ?)

@@ -1,5 +1,6 @@
 package com.squaretoast.payment;
 
+import com.squaretoast.domain.tax.MissingTaxRuleException;
 import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -48,12 +49,34 @@ public class ClaimReconciler {
         if (signed.isEmpty()) {
             return;
         }
-        CheckBalance.Owed owed = balance.owed(check, location, NO_KEY);
-        long total = owed.subtotal().plus(owed.serviceCharges()).plus(owed.tax()).cents();
+        long total;
+        try {
+            CheckBalance.Owed owed = balance.owed(check, location, NO_KEY);
+            total = owed.subtotal().plus(owed.serviceCharges()).plus(owed.tax()).cents();
+        } catch (MissingTaxRuleException e) {
+            total = -1; // the server cannot price this check today: it cannot match, and the payment must still settle
+        }
         if (total != signed.get()) {
             db.sql("update offline_check_claim set status = 'MISMATCH' where check_id = ? and status = 'RECONCILED'")
                     .params(check).update();
             log.warn("Offline claim for check {} does not match its synced total; flagged for review", check);
+        }
+    }
+
+    /**
+     * The server refused the POS's order for {@code check} (sold out, repriced away…). If a guest already paid, or is
+     * paying, its claim, that money now has no check: flag it so the owner can refund or ring it up again.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void orderRefused(UUID check, UUID location) {
+        int flagged = db.sql("""
+                update offline_check_claim c set status = 'MISMATCH'
+                where c.check_id = ? and c.location_id = ? and c.status in ('PENDING', 'PAID')
+                  and (c.status = 'PAID' or exists (select 1 from payment s where s.claim_check_id = c.check_id
+                       and s.status in ('SUCCEEDED', 'PENDING', 'REQUIRES_ACTION')))""")
+                .params(check, location).update();
+        if (flagged > 0) {
+            log.warn("Order for offline-claim check {} was refused at sync; claim flagged for review", check);
         }
     }
 }

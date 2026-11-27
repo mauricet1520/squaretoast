@@ -135,9 +135,6 @@ public class StripeWebhookService {
         // A succeeded charge is money taken: record it even if the intent was marked failed after an earlier decline.
         int settled = db.sql("update payment set status = 'SUCCEEDED' where id = ? and status in ('PENDING', 'REQUIRES_ACTION', 'FAILED', 'CANCELED')")
                 .params(p.id()).update();
-        if (settled > 0) { // first time only: a replayed or updated charge says nothing new
-            realtime.publish(p.locationId(), Topics.CHECK, () -> new CheckChanged(p.checkId()));
-        }
         // An offline claim is paid once what has settled under it and its synced check, tips aside, covers its
         // total. If the POS has already synced that check, the claim is reconciled at the same time.
         db.sql("""
@@ -151,14 +148,19 @@ public class StripeWebhookService {
                 .params(p.id()).update();
         claims.flagMismatch(p.checkId(), p.locationId()); // a claim paid after its check synced (S14-7)
 
+        // Skipped when the fee is not known yet (a later charge.updated carries it) or is already settled.
         String balanceTxn = text(charge.path("balance_transaction"));
-        if (balanceTxn == null || ledger.hasEntry(CardSettlement.KIND, intentRef)) {
-            return; // fee not known yet (a later charge.updated carries it), or already settled
+        if (balanceTxn != null && !ledger.hasEntry(CardSettlement.KIND, intentRef)) {
+            CurrencyCode currency = CurrencyCode.of(p.currency());
+            Money processorFee = gateway.processorFee(balanceTxn);
+            ledger.append(p.locationId(), CardSettlement.txn(intentRef, Money.ofCents(p.amountCents(), currency),
+                    Money.ofCents(p.tipCents(), currency), Money.ofCents(p.feeCents(), currency), processorFee));
         }
-        CurrencyCode currency = CurrencyCode.of(p.currency());
-        Money processorFee = gateway.processorFee(balanceTxn);
-        ledger.append(p.locationId(), CardSettlement.txn(intentRef, Money.ofCents(p.amountCents(), currency),
-                Money.ofCents(p.tipCents(), currency), Money.ofCents(p.feeCents(), currency), processorFee));
+        // Last, after the Stripe fee call and the claim row lock: the location-wide publish lock is then held only
+        // until commit, and taken in the same order as sync (claim row, then location), so the two cannot deadlock.
+        if (settled > 0) { // first time only: a replayed or updated charge says nothing new
+            realtime.publish(p.locationId(), Topics.CHECK, () -> new CheckChanged(p.checkId()));
+        }
     }
 
     private static @Nullable String text(JsonNode node) {

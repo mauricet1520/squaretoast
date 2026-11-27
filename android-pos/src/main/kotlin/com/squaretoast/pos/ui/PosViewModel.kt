@@ -261,7 +261,58 @@ class PosViewModel @Inject constructor(
 
     fun select(orderId: String) {
         if (_charging.value) return // never switch checks under a running charge
+        _guestCheck.value = null
         selected.value = orderId; _tip.value = 0; _splitWays.value = 1; loadBill()
+    }
+
+    // ---- Guest QR orders (plan 17). A local order and a guest check are never selected at once. ----
+
+    private val _guestOrders = MutableStateFlow<List<com.squaretoast.pos.sync.GuestOrder>>(emptyList())
+    val guestOrders: StateFlow<List<com.squaretoast.pos.sync.GuestOrder>> = _guestOrders.asStateFlow()
+    private val _guestCheck = MutableStateFlow<String?>(null)
+    val selectedGuestCheck: StateFlow<String?> = _guestCheck.asStateFlow()
+    private val _accepting = MutableStateFlow<Set<String>>(emptySet())
+    val accepting: StateFlow<Set<String>> = _accepting.asStateFlow()
+    private var guestJob: Job? = null
+
+    fun loadGuestOrders() {
+        guestJob?.cancel()
+        guestJob = viewModelScope.launch {
+            try {
+                _guestOrders.value = cloud.guestOrders()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Offline: keep what we last saw; QR orders need the cloud anyway.
+            }
+        }
+    }
+
+    fun selectGuestCheck(checkId: String) {
+        if (_charging.value) return
+        selected.value = null
+        _guestCheck.value = checkId; _tip.value = 0; _splitWays.value = 1; loadBill()
+    }
+
+    fun accept(order: com.squaretoast.pos.sync.GuestOrder) {
+        if (order.orderId in _accepting.value) return // one accept per order at a time
+        val id = runCatching { UUID.fromString(order.orderId) }.getOrNull() ?: return
+        _accepting.value = _accepting.value + order.orderId
+        viewModelScope.launch {
+            try {
+                cloud.acceptOrder(id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: RejectedBatchException) {
+                _message.value = if (e.status == 409) "${order.table}: something on this order is sold out. Talk to the guest."
+                else "Couldn't accept the order for ${order.table}. Try again."
+            } catch (_: Exception) {
+                _message.value = "Couldn't accept the order for ${order.table}. Check the connection."
+            } finally {
+                _accepting.value = _accepting.value - order.orderId
+            }
+            loadGuestOrders()
+        }
     }
 
     // ---- The bill (plan 15). The server computes every amount; the POS shows it and picks the tip. ----
@@ -294,7 +345,8 @@ class PosViewModel @Inject constructor(
     fun loadBill() {
         billJob?.cancel()
         billJob = viewModelScope.launch {
-            val checkId = selected.value?.let { orders.checkIdOf(it) }?.let(UUID::fromString)
+            val checkId = (_guestCheck.value ?: selected.value?.let { orders.checkIdOf(it) })
+                ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
             if (checkId == null) { _bill.value = BillView.None; return@launch }
             _bill.value = BillView.Loading
             _bill.value = try {

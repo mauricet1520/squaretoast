@@ -107,6 +107,15 @@ class CloudApi(
         }.checked()
     }
 
+    /** Slice 12: the device's location's guest QR orders from the last 12 hours, newest first. */
+    suspend fun guestOrders(): List<GuestOrder> =
+        http.get(baseUrl + "/api/v1/guest-orders") { authenticate() }.checked().body<GuestOrderList>().orders
+
+    /** Slice 12: staff accept a waiting guest order; the server commits it, takes stock and opens its check. */
+    suspend fun acceptOrder(orderId: UUID) {
+        post("/api/v1/orders/$orderId/commit", Unit)
+    }
+
     suspend fun connectionToken(): String = post("/api/v1/terminal/connection_token", Unit).body<ConnectionToken>().secret
 
     suspend fun startCardPayment(checkId: UUID, idempotencyKey: UUID, method: String, tipCents: Long): StartedCardPayment {
@@ -158,3 +167,21 @@ private data class StockItems(val items: List<StockItem>)
 
 @Serializable
 private data class EightySixRequest(val eightySixed: Boolean)
+
+/** Slice 12: one check of an accepted guest QR order, with the server's amount due. */
+@Serializable
+data class GuestCheck(val checkId: String, val label: String, val status: String, val dueCents: Long, val currency: String)
+
+/** Slice 12: a guest QR order. WAITING ones need staff to accept them; ACCEPTED ones have checks. */
+@Serializable
+data class GuestOrder(
+    val orderId: String,
+    val table: String,
+    val openedAt: String,
+    val status: String,
+    val items: List<String> = emptyList(),
+    val checks: List<GuestCheck> = emptyList(),
+)
+
+@Serializable
+private data class GuestOrderList(val orders: List<GuestOrder>)

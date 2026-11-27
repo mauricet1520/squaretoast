@@ -275,20 +275,17 @@ class PosViewModel @Inject constructor(
     val accepting: StateFlow<Set<String>> = _accepting.asStateFlow()
     private var guestJob: Job? = null
     private var liveJob: Job? = null
-    private var liveRefresh: Job? = null
 
     /** Slice 13: while the POS is on screen, refresh guest orders (and an open guest bill) when the cloud says so. */
     fun startLive() {
         if (liveJob?.isActive == true) return
         liveJob = viewModelScope.launch {
-            com.squaretoast.pos.sync.LiveEvents(cloud).run {
-                liveRefresh?.cancel() // a burst of events becomes one refresh
-                liveRefresh = launch {
-                    kotlinx.coroutines.delay(300)
-                    loadGuestOrders()
-                    if (_guestCheck.value != null && !_charging.value) loadBill()
-                }
+            // Child of the live job: stopLive() also drops a refresh that is still waiting.
+            val refresh = com.squaretoast.pos.sync.Debouncer(this, 300) {
+                loadGuestOrders()
+                if (com.squaretoast.pos.sync.LiveRefreshRules.reloadBill(_guestCheck.value, _charging.value)) loadBill()
             }
+            com.squaretoast.pos.sync.LiveEvents(cloud).run { refresh.poke() }
         }
     }
 

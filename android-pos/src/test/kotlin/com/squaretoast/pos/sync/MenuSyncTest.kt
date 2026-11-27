@@ -8,6 +8,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -31,6 +32,55 @@ class MenuSyncTest {
         val asked = mutableListOf<String>()
         override suspend fun me() = DeviceInfo("d-1", location)
         override suspend fun menu(locationId: String): MenuDto { asked += locationId; return menu() }
+        var profile: () -> TaxProfile = { taxProfileFor(location) }
+        val profileAsked = mutableListOf<String>()
+        override suspend fun taxProfile(locationId: String): TaxProfile { profileAsked += locationId; return profile() }
+    }
+
+    companion object {
+        fun taxProfileFor(location: String, ratePpm: Int = 86_250) = TaxProfile(location, "CA", "USD", "America/Los_Angeles",
+            false, false, true, "2026-11-26", "2026-12-03",
+            listOf(TaxRuleDto("CA-SF", "FOOD", null, ratePpm, "2026-01-01", null)), listOf(ItemTax("burger", "FOOD", "HOT")))
+    }
+
+    // ---- Slice 14: the tax profile rides along with the menu
+
+    @Test
+    fun theTaxProfileIsStoredWithTheMenu() = runBlocking {
+        val api = FakeApi("loc-1") { lunch }
+
+        assertTrue(MenuSync(db, api, clock).refresh())
+
+        assertEquals(listOf("loc-1"), api.profileAsked)
+        val stored = db.menuDao().taxProfile()!!
+        assertEquals("loc-1", stored.locationId)
+        assertEquals(clock.millis(), stored.fetchedAt)
+        assertEquals(taxProfileFor("loc-1"), stored.profile())
+    }
+
+    @Test
+    fun aTaxProfileFailureKeepsTheNewMenuAndTheLastProfile() = runBlocking {
+        val api = FakeApi("loc-1") { lunch }
+        MenuSync(db, api, clock).refresh()
+
+        api.profile = { throw IOException("timeout") }
+        api.menu = { MenuDto(listOf(MenuItemDto("tacos", "Tacos", 900, "USD", true))) }
+        assertTrue(MenuSync(db, api, Clock.offset(clock, Duration.ofHours(1))).refresh())
+
+        assertEquals(listOf("tacos"), db.menuDao().items().map { it.id })
+        assertEquals(clock.millis(), db.menuDao().taxProfile()!!.fetchedAt)
+    }
+
+    @Test
+    fun aProfileForAnotherLocationIsNotStoredAndAMoveDropsTheOldOne() = runBlocking {
+        val api = FakeApi("loc-1") { lunch }
+        MenuSync(db, api, clock).refresh()
+
+        api.location = "loc-2"
+        api.profile = { taxProfileFor("loc-1") } // a confused server answer
+        MenuSync(db, api, clock).refresh()
+
+        assertNull(db.menuDao().taxProfile()) // no profile beats another location's tax rules
     }
 
     private val lunch = MenuDto(listOf(

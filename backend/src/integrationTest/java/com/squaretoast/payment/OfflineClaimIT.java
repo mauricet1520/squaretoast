@@ -386,7 +386,55 @@ class OfflineClaimIT {
         assertThat(claimStatus(check)).as("only part of the claim has settled").isEqualTo("PENDING");
 
         settle(posKey);
-        assertThat(claimStatus(check)).isEqualTo("RECONCILED"); // fully paid, and the POS has already synced it
+        // Fully paid and synced, but the synced check (one burger, 16.09) is not the signed 42.90: flagged (Slice 14).
+        assertThat(claimStatus(check)).isEqualTo("MISMATCH");
+    }
+
+    // ---------------------------------------------------------------- slice 14: a claim whose total differs from the synced check
+
+    private HttpResponse<String> syncFriesOnly(UUID checkId) { // 1000 + 7.25% = 1073, not the signed 4290
+        return d.sync(pos.device().token(), List.of(d.orderPlaced(UUID.randomUUID(), UUID.randomUUID(), loc,
+                Map.of(1, UUID.randomUUID()), List.of(new Line(fries, 1, 1, 1, 1000)), checkId)));
+    }
+
+    @Test
+    void aPaidClaimWhoseTotalDiffersFromTheSyncedCheckIsFlagged() {
+        UUID check = UUID.randomUUID();
+        UUID key = UUID.randomUUID();
+        assertThat(d.claimPay(signed(claim(check, nonce())), key, 0).statusCode()).isEqualTo(200);
+        settle(key);
+
+        assertThat(DeviceFixture.results(syncFriesOnly(check)).values()).allMatch(v -> v.get(0).equals("APPLIED"));
+
+        assertThat(claimStatus(check)).isEqualTo("MISMATCH");
+        assertThat(d.row("select reconciled_at is not null as done from offline_check_claim where check_id = ?", check)
+                .get("done")).isEqualTo(true);
+        assertThat(p.payment(key).get("status")).as("the money taken is kept").isEqualTo("SUCCEEDED");
+    }
+
+    @Test
+    void aClaimPaidAfterADifferentCheckSyncedIsFlagged() {
+        UUID check = UUID.randomUUID();
+        UUID key = UUID.randomUUID();
+        assertThat(d.claimPay(signed(claim(check, nonce())), key, 0).statusCode()).isEqualTo(200);
+        assertThat(DeviceFixture.results(syncFriesOnly(check)).values()).allMatch(v -> v.get(0).equals("APPLIED"));
+        assertThat(claimStatus(check)).as("not paid yet: nothing to compare").isEqualTo("PENDING");
+
+        settle(key);
+
+        assertThat(claimStatus(check)).isEqualTo("MISMATCH");
+    }
+
+    @Test
+    void aMatchingClaimPaidAfterSyncIsReconciled() {
+        UUID check = UUID.randomUUID();
+        UUID key = UUID.randomUUID();
+        assertThat(d.claimPay(signed(claim(check, nonce())), key, 0).statusCode()).isEqualTo(200);
+        assertThat(DeviceFixture.results(syncCheck(check)).values()).allMatch(v -> v.get(0).equals("APPLIED"));
+
+        settle(key);
+
+        assertThat(claimStatus(check)).isEqualTo("RECONCILED");
     }
 
     @Test

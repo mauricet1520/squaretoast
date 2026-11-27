@@ -1054,3 +1054,40 @@ Slice 12 lists guest QR orders, but only on resume or Refresh. A new QR order sh
 - **Not covered / later:** a real guest card payment ending live on the phone (covered by PosLiveIT, not tried on device); view-model tests for the live refresh.
 - **Follow-up (same day):** chips from the same table are numbered by arrival ("T1 #1" is the oldest, parsed as a time, not text). Android 142 tests + lint pass. Not checked on the phone.
 - **Follow-up:** the live refresh debounce and bill-reload rule moved into `sync/Debouncer.kt` with unit tests (`DebouncerTest`, 4 tests). Android 146 tests + lint pass. The view model itself still has no tests.
+
+---
+
+## 19. Slice 14 — offline QR pay from the POS (pending approval)
+
+When the POS has no internet, Tap to Pay is off (CLAUDE.md §4). Today the staff have no way to take a card then. The pieces exist but are not joined:
+- the Keystore claim key and `OfflineClaimSigner`;
+- the guest `/c#…` page;
+- the public claim payment endpoint;
+- claim reconciliation (Slices 6–7).
+
+The missing part is a correct total on the phone. Tax rules live only on the server.
+
+### 19.1 Decisions
+
+| # | Decision | Why |
+|---|---|---|
+| S14-1 | **Tax on the phone:** a Kotlin port of `TaxEngine` (about 100 lines). It covers per-jurisdiction rates, a channel rule replacing the any-channel rule, the CA cold-food-to-go rule, and half-up rounding once per check. A missing rule fails closed, so no QR is shown. | A cached server total goes stale as soon as staff add an item offline. |
+| S14-2 | **No drift:** one shared fixture, `testdata/tax-vectors.json` (inputs and the expected tax in cents). `TaxEngineTest` (Java) and `TaxEngineKtTest` (Kotlin) both run every vector. | If the two engines ever disagree, a build fails. Otherwise a guest would be charged a different amount than the server bill. |
+| S14-3 | **Tax profile for devices:** `GET /api/v1/locations/{id}/tax-profile` (device auth, own location only). It returns the state, currency, CA 80/80 and separate-accounting flags, and whether mandatory charges are taxed. It also returns the rules in effect from today to +7 days, plus each item's `taxCategory` and `temp`. It is stored in Room with the menu snapshot. The public menu is unchanged. | Guests don't need tax internals. The +7 days covers a rate change during a long outage. |
+| S14-4 | **Channel:** POS orders are `DINE_IN`, the same as the server stores today. There are no service charges, because POS orders cannot add them yet. | Keeps the claim equal to what the server will bill. |
+| S14-5 | **Lines digest:** SHA-256 over the check's lines, sorted by line ID (`id|qty|unitCents|optionIds`), as base64url. | Lets a later check flag a claim whose items changed after signing. The server only stores it for now. |
+| S14-6 | **POS flow:** "QR pay at table" offers a "Show pay code" button only when the device is offline and enrolled, and the profile covers today. The QR is shown full-screen with the total and a "Expires in 2 h" note. After 2 h it has to be re-issued. The check shows "Guest paying (offline)" until sync. The fragment and token are never logged. | Card data stays in Stripe on the guest's phone (SAQ C boundary). The POS never sees a card. |
+| S14-7 | **Mismatch at sync:** if a check's synced total ≠ the claim total, the server sets `offline_check_claim.status = 'MISMATCH'` (in V9) and logs the check ID only. Whatever was paid is kept. | Gives the owner something to look at instead of silence. Refunds stay manual. |
+
+### 19.2 RED tests first
+- **Backend:**
+  - `TaxEngineTest` reads the shared vectors.
+  - `TaxProfileIT`: own location only, 401 without a device, rules windowed to +7 days.
+  - `OfflineClaimIT`: a mismatched total at sync → MISMATCH.
+- **Android:**
+  - `TaxEngineKtTest` (the same vectors).
+  - `ClaimDraftsTest`: builds a draft from Room lines and the profile; digest order; fails closed on a missing rule.
+  - `PayCodeGateTest`: offline + enrolled + profile covers today → show; otherwise → hide.
+
+### 19.3 Not in Slice 14
+Split shares paid by claim; service charges on POS orders; claim refunds; checking the lines digest on the server.

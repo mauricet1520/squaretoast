@@ -36,7 +36,7 @@ class MutationApplier {
 
     /** {@code checkId} is the POS's own check id, sent when it may have issued an offline claim for the check. */
     private record OrderPlaced(String orderId, String locationId, @Nullable String tableLabel, List<Line> lines,
-                               @Nullable String checkId) {}
+                               @Nullable String checkId, @Nullable Long placedAt) {}
 
     /** {@code optionIds} is absent from POS builds before Slice 9; that means no options. */
     private record Line(String lineId, String courseId, int course, int seat, String menuItemId, int quantity,
@@ -119,7 +119,7 @@ class MutationApplier {
                                     : l.optionIds().stream().map(UUID::fromString).toList())).toList();
                     String check = p.checkId();
                     orders.placeOrder(device.deviceId(), device.locationId(), orderId, p.tableLabel(), lines,
-                            check == null ? null : UUID.fromString(check));
+                            check == null ? null : UUID.fromString(check), p.placedAt());
                 }
                 case "COURSE_TRANSITIONED" -> {
                     CourseTransitioned p = JSON.readValue(payload, CourseTransitioned.class);

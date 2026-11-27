@@ -54,7 +54,7 @@ public class DeviceOrderService {
 
     @Transactional(propagation = Propagation.MANDATORY)
     public void placeOrder(UUID device, UUID location, UUID orderId, @Nullable String tableLabel, List<PlacedLine> lines,
-                           @Nullable UUID posCheckId) {
+                           @Nullable UUID posCheckId, @Nullable Long placedAtMillis) {
         if (lines.isEmpty()) {
             throw new OrderRejected("INVALID_MUTATION");
         }
@@ -81,8 +81,13 @@ public class DeviceOrderService {
         UUID table = tableLabel == null ? null : db.sql("select id from dining_table where location_id = ? and label = ?")
                 .params(location, tableLabel).query(UUID.class).optional().orElse(null);
 
-        db.sql("insert into orders(id, location_id, table_id, fulfillment_channel, origin_device_id) values (?, ?, ?, 'DINE_IN', ?)")
-                .params(java.util.Arrays.asList(orderId, location, table, device)).update();
+        // Plan 19.6: tax by the local date of sale. The device's clock is trusted only within the last 72 hours.
+        db.sql("""
+                insert into orders(id, location_id, table_id, fulfillment_channel, origin_device_id, sold_on)
+                select ?, ?, ?, 'DINE_IN', ?, cast(greatest(now() - interval '72 hours',
+                           least(now(), coalesce(to_timestamp(cast(? as bigint) / 1000.0), now()))) at time zone l.timezone as date)
+                from location l where l.id = ?""")
+                .params(java.util.Arrays.asList(orderId, location, table, device, placedAtMillis, location)).update();
         Map<Integer, UUID> seatIds = new LinkedHashMap<>();
         for (int seat : seats) {
             UUID id = UUID.randomUUID();

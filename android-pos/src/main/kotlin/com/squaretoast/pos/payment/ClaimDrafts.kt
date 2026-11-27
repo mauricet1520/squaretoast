@@ -54,6 +54,13 @@ object ClaimDrafts {
         }
     }
 
+    /** Plan 19.6: the location-local date the order was rung up, the date the server taxes it by. Null for a bad zone. */
+    fun saleDate(createdAtMillis: Long, timezone: String): LocalDate? = try {
+        java.time.Instant.ofEpochMilli(createdAtMillis).atZone(java.time.ZoneId.of(timezone)).toLocalDate()
+    } catch (_: java.time.DateTimeException) {
+        null
+    }
+
     /** base64url(SHA-256) of "id|qty|unitCents" per line, sorted by line id, joined by newlines (S14-5). */
     fun linesDigest(lines: List<OrderLineEntity>): String {
         val text = lines.sortedBy { it.id }.joinToString("\n") { "${it.id}|${it.quantity}|${it.unitPriceCents}" }

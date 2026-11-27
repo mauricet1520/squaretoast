@@ -36,6 +36,8 @@ private data class OrderPlacedPayload(
     val tableLabel: String,
     val lines: List<LinePayload>,
     val checkId: String,
+    /** When the order was rung up (epoch ms): the server taxes by its local date (plan 19.6). */
+    val placedAt: Long,
 )
 
 @Serializable
@@ -71,12 +73,13 @@ class OrderRepository(private val db: AppDatabase, private val clock: Clock) {
                 l.name, l.quantity, l.unitPriceCents)
         }
         val checkId = UUID.randomUUID().toString()
+        val now = clock.millis() // one sale time for the order row and what the server taxes by
         val payload = OrderPlacedPayload(orderId, cmd.locationId.toString(), cmd.tableLabel, cmd.lines.zip(lines) { n, l ->
             LinePayload(l.id, l.courseId, n.course, l.seat, l.menuItemId, l.quantity, l.unitPriceCents, n.optionIds)
-        }, checkId)
+        }, checkId, now)
 
         db.withTransaction {
-            db.orderDao().insertOrder(OrderEntity(orderId, cmd.locationId.toString(), cmd.tableLabel, clock.millis(), checkId))
+            db.orderDao().insertOrder(OrderEntity(orderId, cmd.locationId.toString(), cmd.tableLabel, now, checkId))
             db.orderDao().insertCourses(courseIds.map { (n, id) -> CourseEntity(id, orderId, n, CourseState.HOLD) })
             db.orderDao().insertLines(lines)
             enqueue(cmd.mutationId, orderId, "ORDER_PLACED", Json.encodeToString(payload))

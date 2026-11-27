@@ -13,7 +13,6 @@ import com.squaretoast.domain.tax.TaxableLine;
 import java.math.BigInteger;
 import java.sql.Date;
 import java.time.LocalDate;
-import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -33,7 +32,7 @@ class CheckBalance {
     /** This check's exact cents of one order line. */
     record LineShare(UUID lineId, long cents) {}
 
-    private record Header(UUID order, UUID location, String channel, String state, String currency, String timezone,
+    private record Header(UUID order, UUID location, String channel, String state, String currency, LocalDate soldOn,
                           boolean ca8080, boolean caSeparate, boolean mandatoryTaxable) {}
 
     private record LineRow(UUID id, long amount, String taxCategory, String temp) {}
@@ -51,7 +50,8 @@ class CheckBalance {
     /** Throws {@link PaymentException.NotFound} unless the check belongs to {@code location}. */
     Owed owed(UUID checkId, UUID location, UUID excludingIdempotencyKey) {
         Header h = db.sql("""
-                select o.id as order_id, o.location_id, o.fulfillment_channel, l.state_code, l.currency, l.timezone,
+                select o.id as order_id, o.location_id, o.fulfillment_channel, l.state_code, l.currency,
+                       coalesce(o.sold_on, cast(o.opened_at at time zone l.timezone as date)) as sold_on,
                        l.ca_80_80_applies, l.ca_separate_accounting_elected, p.mandatory_service_charge_taxable
                 from guest_check g join orders o on o.id = g.order_id join location l on l.id = o.location_id
                 join state_compliance_profile p on p.state_code = l.state_code
@@ -59,7 +59,7 @@ class CheckBalance {
                 .params(checkId)
                 .query((rs, n) -> new Header(rs.getObject("order_id", UUID.class), rs.getObject("location_id", UUID.class),
                         rs.getString("fulfillment_channel"), rs.getString("state_code"), rs.getString("currency"),
-                        rs.getString("timezone"), rs.getBoolean("ca_80_80_applies"),
+                        rs.getDate("sold_on").toLocalDate(), rs.getBoolean("ca_80_80_applies"),
                         rs.getBoolean("ca_separate_accounting_elected"), rs.getBoolean("mandatory_service_charge_taxable")))
                 .optional()
                 .filter(x -> x.location().equals(location))
@@ -106,7 +106,7 @@ class CheckBalance {
             });
         }
 
-        LocalDate today = LocalDate.now(ZoneId.of(h.timezone()));
+        LocalDate today = h.soldOn(); // plan 19.6: the date of sale, not the date of billing
         TaxContext ctx = new TaxContext(h.state(), today, FulfillmentChannel.valueOf(h.channel()), h.ca8080(),
                 h.caSeparate(), h.mandatoryTaxable(), currency);
         Money tax = TaxEngine.compute(ctx, rules(h.state()), taxable, charges, Money.zero(currency)).tax();

@@ -1039,5 +1039,5 @@ Slice 12 lists guest QR orders, but only on resume or Refresh. A new QR order sh
 - **View model** runs the listener only while the app is on screen (started on resume, stopped on pause), and coalesces a burst of events into one `loadGuestOrders()`.
 
 ### 18.2 RED tests first
-- Backend `PosLiveIT`: a POS device's stream hears `order` when a guest orders, `course` when staff accept it, and `check` (with only the check id) when the guest's payment succeeds; a repeated webhook does not publish again; the public stream never carries `check`.
+- Backend `PosLiveIT`: a POS device's stream hears `order` when a guest orders and `order` (status ACCEPTED) when staff accept it, and `check` (with only the check id) when the guest's payment succeeds; a repeated webhook does not publish again; the public stream never carries `check`.
 - Android `LiveEventsTest` (Ktor MockEngine): only order/course/check reach the callback; a reconnect sends the last event id with a fresh ticket; back-off grows and caps at 30 s; a 401 on the ticket stops the listener.

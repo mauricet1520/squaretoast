@@ -99,6 +99,35 @@ class RoleGrantIT {
     }
 
     @Test
+    void onlyAnOwnerCanMakeOrRemoveOwners() {
+        User admin = a.user(merchant);
+        a.grant(admin, "GROUP_ADMIN", "MERCHANT", merchant);
+        Session as = a.session(admin);
+        UUID ownerGrant = a.db.sql("select id from role_grant where user_id = ?").params(owner.id()).query(UUID.class).single();
+
+        assertThat(grant(as, admin, "OWNER", "MERCHANT", merchant).statusCode()).as("self-promotion to owner").isEqualTo(403);
+        assertThat(grant(as, newHire, "OWNER", "MERCHANT", merchant).statusCode()).isEqualTo(403);
+        assertThat(a.call("DELETE", "/admin/role-grants/" + ownerGrant, null, as).statusCode()).isEqualTo(403);
+        assertThat(a.count("select count(*) from role_grant g join role r on r.id = g.role_id where r.system_key = 'OWNER'"
+                + " and g.user_id in (?, ?)", admin.id(), newHire.id())).isZero();
+        assertThat(grant(as, newHire, "GM", "LOCATION", west).statusCode()).as("other roles still fine").isEqualTo(201);
+    }
+
+    @Test
+    void aLocationManagerListsOnlyStaffInTheirOwnScope() {
+        User eastLead = a.user(merchant);
+        a.grant(eastLead, "SHIFT_LEAD", "LOCATION", east);
+        User westLead = a.user(merchant);
+        a.grant(westLead, "SHIFT_LEAD", "LOCATION", west);
+
+        String body = a.call("GET", "/admin/users", null, gmSession).body();
+        assertThat(body).contains(eastLead.email(), gm.email()).doesNotContain(westLead.email(), owner.email());
+
+        assertThat(a.call("GET", "/admin/users", null, a.session(owner)).body())
+                .as("a merchant-wide manager sees everyone").contains(eastLead.email(), westLead.email(), newHire.email());
+    }
+
+    @Test
     void revokingNeedsTheSameRightsAsGranting() {
         UUID ownerGrant = a.db.sql("select id from role_grant where user_id = ?").params(owner.id()).query(UUID.class).single();
         assertThat(a.call("DELETE", "/admin/role-grants/" + ownerGrant, null, gmSession).statusCode()).isEqualTo(403);

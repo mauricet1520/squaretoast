@@ -119,7 +119,7 @@ final class AdminFixture {
 
     HttpResponse<String> send(String method, String path, @Nullable String body, @Nullable String cookie,
                               @Nullable String csrf, @Nullable String bearer) {
-        HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(baseUrl + path))
+        HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(baseUrl + path)).timeout(java.time.Duration.ofSeconds(15))
                 .method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body));
         if (body != null) {
             b.header("Content-Type", "application/json");

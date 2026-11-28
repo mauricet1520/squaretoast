@@ -94,6 +94,25 @@ class AdminSessionIT {
     }
 
     @Test
+    void aLoginForAnEmailAlreadyBeingCheckedIsTurnedAwayAtOnce() throws java.sql.SQLException {
+        try (java.sql.Connection c = dataSource.getConnection()) {
+            c.setAutoCommit(false);
+            try (java.sql.PreparedStatement st = c.prepareStatement("select pg_advisory_xact_lock(hashtext(?))")) {
+                st.setString(1, pat.email().toLowerCase(Locale.ROOT));
+                st.execute();
+            }
+            long start = System.nanoTime();
+            HttpResponse<String> r = a.login(pat.email(), pat.password());
+            long millis = (System.nanoTime() - start) / 1_000_000;
+
+            assertThat(r.statusCode()).as("no waiting on a pooled connection").isEqualTo(429);
+            assertThat(millis).isLessThan(2_000);
+            c.rollback();
+        }
+        assertThat(a.login(pat.email(), pat.password()).statusCode()).isEqualTo(200);
+    }
+
+    @Test
     void disabledUserCannotLogin() {
         Session before = a.session(pat);
         a.disable(pat);

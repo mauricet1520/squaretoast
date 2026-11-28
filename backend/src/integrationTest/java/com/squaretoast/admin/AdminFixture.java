@@ -56,6 +56,35 @@ final class AdminFixture {
         return new User(id, merchant, email, password);
     }
 
+    /** Grants a system role (OWNER, GROUP_ADMIN, GM, SHIFT_LEAD, STAFF) at a scope, as an operator would. */
+    UUID grant(User u, String systemRole, String scopeKind, UUID scopeId) {
+        UUID id = UUID.randomUUID();
+        db.sql("""
+                insert into role_grant(id, user_id, role_id, scope_kind, scope_id)
+                select ?, ?, r.id, ?, ? from role r where r.system_key = ? and r.merchant_id is null""")
+                .params(id, u.id(), scopeKind, scopeId, systemRole).update();
+        return id;
+    }
+
+    UUID roleId(String systemRole) {
+        return db.sql("select id from role where system_key = ? and merchant_id is null").params(systemRole)
+                .query(UUID.class).single();
+    }
+
+    UUID group(UUID merchant, UUID... locations) {
+        UUID id = UUID.randomUUID();
+        db.sql("insert into location_group(id, merchant_id, name) values (?, ?, 'Coast')").params(id, merchant).update();
+        for (UUID l : locations) {
+            db.sql("insert into location_group_member(group_id, location_id) values (?, ?)").params(id, l).update();
+        }
+        return id;
+    }
+
+    static String grantBody(UUID user, UUID role, String scopeKind, UUID scopeId) {
+        return JSON.createObjectNode().put("userId", user.toString()).put("roleId", role.toString())
+                .put("scopeKind", scopeKind).put("scopeId", scopeId.toString()).toString();
+    }
+
     void disable(User u) {
         db.sql("update app_user set disabled_at = now() where id = ?").params(u.id()).update();
     }

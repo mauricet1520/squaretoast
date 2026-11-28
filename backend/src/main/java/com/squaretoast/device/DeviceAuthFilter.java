@@ -34,6 +34,8 @@ final class DeviceAuthFilter extends OncePerRequestFilter {
             |claims/payments\
             |payments/cancel\
             |t/[^/]+(/orders|/checks(/[^/]+(/payments)?)?)?)$""");
+    /** Back-office paths: guarded by the admin session filter instead, so a device token never opens them. */
+    private static final Pattern ADMIN = Pattern.compile("^/api/[^/]+/admin(/.*)?$");
     private static final Pattern TOKEN = Pattern.compile("[A-Za-z0-9_-]{20,128}");
 
     private final JdbcClient db;
@@ -46,7 +48,7 @@ final class DeviceAuthFilter extends OncePerRequestFilter {
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String pathInfo = request.getPathInfo();
         String path = request.getServletPath() + (pathInfo == null ? "" : pathInfo);
-        return PUBLIC.matcher(path).matches();
+        return PUBLIC.matcher(path).matches() || ADMIN.matcher(path).matches();
     }
 
     @Override

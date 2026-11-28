@@ -13,6 +13,9 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-flyway")
     implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
+    // B1: Argon2id password hashes only (no Spring Security filter chain); BouncyCastle provides Argon2.
+    implementation("org.springframework.security:spring-security-crypto")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.81")
     runtimeOnly("org.flywaydb:flyway-database-postgresql")
     runtimeOnly("org.postgresql:postgresql")
 

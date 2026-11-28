@@ -93,6 +93,30 @@ class AdminSessionIT {
         assertThat(a.login(other.email(), other.password()).statusCode()).as("other accounts unaffected").isEqualTo(200);
     }
 
+    private void failedAttempts(String email, String ip, int n) {
+        for (int i = 0; i < n; i++) {
+            a.db.sql("insert into admin_login_attempt(email_lower, ip, ok) values (lower(?), ?, false)").params(email, ip).update();
+        }
+    }
+
+    @Test
+    void someoneElsesFailuresDoNotLockTheOwnerOut() {
+        failedAttempts(pat.email(), "203.0.113.9", 5); // an attacker guessing from another address
+
+        assertThat(a.login(pat.email(), pat.password()).statusCode()).as("the owner's own address still works").isEqualTo(200);
+    }
+
+    @Test
+    void aSpreadOutAttackStillHitsAnOverallCap() {
+        for (int i = 0; i < 25; i++) {
+            failedAttempts(pat.email(), "198.51.100." + i, 4); // 100 failures, none over the per-address limit
+        }
+
+        HttpResponse<String> r = a.login(pat.email(), pat.password());
+        assertThat(r.statusCode()).isEqualTo(429);
+        assertThat(r.headers().firstValue("Retry-After")).isPresent();
+    }
+
     @Test
     void aLoginForAnEmailAlreadyBeingCheckedIsTurnedAwayAtOnce() throws java.sql.SQLException {
         try (java.sql.Connection c = dataSource.getConnection()) {

@@ -43,8 +43,11 @@ class AdminSessions {
             return new Invalid();
         }
         String key = email.trim().toLowerCase(Locale.ROOT);
-        // One login per email at a time, so parallel guesses cannot slip past the failure count.
-        db.sql("select pg_advisory_xact_lock(hashtext(?))").params(key).query((rs, n) -> 1).list();
+        // One login per email at a time, so parallel guesses cannot slip past the failure count. A second one is
+        // turned away at once rather than holding a pooled connection while it waits.
+        if (!db.sql("select pg_try_advisory_xact_lock(hashtext(?))").params(key).query(Boolean.class).single()) {
+            return new Limited(1);
+        }
         long emailFailures = db.sql("""
                 select count(*) from admin_login_attempt
                 where email_lower = ? and not ok and at > greatest(now() - make_interval(secs => ?),

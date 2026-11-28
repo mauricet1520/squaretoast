@@ -207,3 +207,18 @@ B3 — audit (`V10__audit_event.sql`)
 - Keys like password, pin, pan, card, cvv, token and secret are redacted from before/after.
 - Login (ok and failed), logout, location edit, grant and revoke each write exactly one event.
 - The approver is a separate column from the actor.
+
+### B1–B3 as built (audit and security review, 2026-11-27)
+- Sessions have no `expires_at` column. The 30 min idle and 12 h limits come from `last_seen_at` and `created_at`.
+- The approver column is `approver_user_id`. An `approver_employee_id` comes with POS approvals.
+- A failed login for an unknown email writes no audit event, because there is no merchant to file it under. It is kept in `admin_login_attempt`. A 429 writes neither.
+- The last-owner guard counts only owners who are not disabled.
+- UPDATE and DELETE on `audit_event` are blocked by triggers. Revoking those rights from the app's database role waits for the deploy's role split.
+- Fixed from the security review:
+  - only an OWNER at merchant scope can grant or revoke OWNER;
+  - `GET /admin/users` lists only people with a grant where the caller has STAFF_MANAGE;
+  - login uses `pg_try_advisory_xact_lock`, so a busy lock gives 429 at once.
+- Open, for the owner to decide:
+  - an attacker can lock an account by failing 5 times;
+  - the IP limit needs the proxy's forwarded address once deployed;
+  - a small timing gap between known and unknown emails.

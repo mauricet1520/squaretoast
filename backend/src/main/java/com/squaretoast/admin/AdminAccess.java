@@ -88,10 +88,6 @@ class AdminAccess {
         }
     }
 
-    boolean holdsAnywhere(AdminPrincipal p, Permission needed) {
-        return grants(p.userId()).stream().anyMatch(g -> g.permissions().contains(needed));
-    }
-
     private boolean exists(String sql, Object... params) {
         return db.sql(sql).params(params).query(Long.class).single() > 0;
     }

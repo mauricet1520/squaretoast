@@ -50,14 +50,35 @@ class AdminStaffController {
 
     @GetMapping(path = "/admin/users", version = "1")
     List<UserView> users(@RequestAttribute(AdminPrincipal.ATTRIBUTE) AdminPrincipal admin) {
-        if (!access.holdsAnywhere(admin, Permission.STAFF_MANAGE)) {
+        List<PermissionResolver.Grant> mine = access.grants(admin.userId());
+        if (mine.stream().noneMatch(g -> g.permissions().contains(Permission.STAFF_MANAGE))) {
             throw AdminDenied.forbidden();
         }
-        return db.sql("select id, email, display_name, disabled_at is not null as disabled from app_user where merchant_id = ? order by email")
+        List<UserView> all = db.sql("select id, email, display_name, disabled_at is not null as disabled from app_user where merchant_id = ? order by email")
                 .params(admin.merchantId())
                 .query((rs, n) -> new UserView(rs.getObject("id", UUID.class), rs.getString("email"),
                         rs.getString("display_name"), rs.getBoolean("disabled")))
                 .list();
+        if (access.at(mine, admin, ScopeKind.MERCHANT, admin.merchantId()).contains(Permission.STAFF_MANAGE)) {
+            return all;
+        }
+        // Otherwise only people who hold a grant somewhere the caller manages staff.
+        List<GrantRow> grants = db.sql("""
+                select g.user_id, g.role_id, g.scope_kind, g.scope_id from role_grant g join app_user u on u.id = g.user_id
+                where u.merchant_id = ?""")
+                .params(admin.merchantId())
+                .query((rs, n) -> new GrantRow(rs.getObject("user_id", UUID.class), rs.getObject("role_id", UUID.class),
+                        ScopeKind.valueOf(rs.getString("scope_kind")), rs.getObject("scope_id", UUID.class)))
+                .list();
+        Map<String, Boolean> manages = new java.util.HashMap<>();
+        Set<UUID> visible = new java.util.HashSet<>();
+        for (GrantRow g : grants) {
+            if (manages.computeIfAbsent(g.kind() + ":" + g.scopeId(),
+                    k -> access.at(mine, admin, g.kind(), g.scopeId()).contains(Permission.STAFF_MANAGE))) {
+                visible.add(g.userId());
+            }
+        }
+        return all.stream().filter(u -> visible.contains(u.id())).toList();
     }
 
     @GetMapping(path = "/admin/roles", version = "1")
@@ -131,6 +152,13 @@ class AdminStaffController {
     private void requireMayHandOut(AdminPrincipal admin, RoleRow role, ScopeKind kind, UUID scopeId) {
         Set<Permission> held = access.at(admin, kind, scopeId);
         if (!held.contains(Permission.STAFF_MANAGE) || !held.containsAll(role.permissions())) {
+            throw AdminDenied.forbidden();
+        }
+        // Owners are made and removed only by an owner: a group admin holds the same permissions but not the business.
+        if ("OWNER".equals(role.systemKey()) && db.sql("""
+                select count(*) from role_grant g join role r on r.id = g.role_id
+                where g.user_id = ? and r.system_key = 'OWNER' and g.scope_kind = 'MERCHANT' and g.scope_id = ?""")
+                .params(admin.userId(), admin.merchantId()).query(Long.class).single() == 0) {
             throw AdminDenied.forbidden();
         }
     }

@@ -1,6 +1,7 @@
 package com.squaretoast.admin;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -22,10 +23,12 @@ class AdminLocationsController {
 
     private final JdbcClient db;
     private final AdminAccess access;
+    private final AuditLog audit;
 
-    AdminLocationsController(JdbcClient db, AdminAccess access) {
+    AdminLocationsController(JdbcClient db, AdminAccess access, AuditLog audit) {
         this.db = db;
         this.access = access;
+        this.audit = audit;
     }
 
     @GetMapping(path = "/admin/locations", version = "1")
@@ -52,8 +55,12 @@ class AdminLocationsController {
         if (name.isEmpty() || name.length() > 100) {
             throw AdminDenied.badRequest();
         }
+        LocationView before = views("where id = ? for update", id).getFirst();
         db.sql("update location set name = ? where id = ? and merchant_id = ?").params(name, id, admin.merchantId()).update();
-        return views("where id = ?", id).getFirst();
+        LocationView after = views("where id = ?", id).getFirst();
+        audit.record(new AuditLog.Entry(admin.merchantId(), id, AuditLog.Actor.user(admin.userId()), null, "LOCATION_UPDATED",
+                "location", id, Map.of("name", before.name()), Map.of("name", after.name())));
+        return after;
     }
 
     private List<LocationView> views(String where, Object... params) {

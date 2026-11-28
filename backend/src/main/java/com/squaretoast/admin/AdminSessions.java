@@ -1,6 +1,7 @@
 package com.squaretoast.admin;
 
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
@@ -29,9 +30,11 @@ class AdminSessions {
     private record UserRow(UUID id, UUID merchantId, String hash, boolean disabled) {}
 
     private final JdbcClient db;
+    private final AuditLog audit;
 
-    AdminSessions(JdbcClient db) {
+    AdminSessions(JdbcClient db, AuditLog audit) {
         this.db = db;
+        this.audit = audit;
     }
 
     @Transactional
@@ -68,6 +71,9 @@ class AdminSessions {
             ok = Passwords.matches(password, user.get().hash()) && !user.get().disabled();
         }
         db.sql("insert into admin_login_attempt(email_lower, ip, ok) values (?, ?, ?)").params(key, ip, ok).update();
+        // An unknown email has no merchant to file the event under; admin_login_attempt still has it.
+        user.ifPresent(u -> audit.record(new AuditLog.Entry(u.merchantId(), null, AuditLog.Actor.user(u.id()), null,
+                ok ? "ADMIN_LOGIN" : "ADMIN_LOGIN_FAILED", "app_user", u.id(), null, Map.of("ip", ip))));
         if (!ok) {
             return new Invalid();
         }
@@ -78,9 +84,12 @@ class AdminSessions {
         return new Ok(user.get().id(), user.get().merchantId(), token, csrf);
     }
 
+    @Transactional
     void logout(AdminPrincipal p) {
         db.sql("update admin_session set revoked_at = now() where token_hash = decode(?, 'hex') and revoked_at is null")
                 .params(p.sessionKey()).update();
+        audit.record(new AuditLog.Entry(p.merchantId(), null, AuditLog.Actor.user(p.userId()), null, "ADMIN_LOGOUT", "app_user",
+                p.userId(), null, null));
     }
 
     record Me(UUID userId, UUID merchantId, String email, String displayName) {}

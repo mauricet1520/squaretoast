@@ -8,6 +8,7 @@ import com.squaretoast.admin.AdminFixture.User;
 import java.net.http.HttpResponse;
 import java.util.Map;
 import java.util.UUID;
+import org.jspecify.annotations.Nullable;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -68,7 +69,7 @@ class AuditEventIT {
 
         assertThat(a.call("PATCH", "/admin/locations/" + loc, "{\"name\":\"Uptown\"}", s).statusCode()).isEqualTo(200);
         assertThat(events("LOCATION_UPDATED")).isEqualTo(1);
-        Map<String, Object> row = a.db.sql("""
+        Map<String, @Nullable Object> row = a.db.sql("""
                 select location_id, entity_kind, entity_id, before ->> 'name' as before_name, after ->> 'name' as after_name,
                        request_id from audit_event where action = 'LOCATION_UPDATED' and merchant_id = ?""")
                 .params(merchant).query().singleRow();
@@ -120,7 +121,7 @@ class AuditEventIT {
         audit.record(new AuditLog.Entry(merchant, loc, AuditLog.Actor.user(staff.id()), owner.id(), "LINE_VOIDED", "order_line",
                 line, null, Map.of("reason", "guest changed mind")));
 
-        Map<String, Object> row = a.db.sql("select actor_user_id, approver_user_id, after ->> 'reason' as reason from audit_event where entity_id = ?")
+        Map<String, @Nullable Object> row = a.db.sql("select actor_user_id, approver_user_id, after ->> 'reason' as reason from audit_event where entity_id = ?")
                 .params(line).query().singleRow();
         assertThat(row).containsEntry("actor_user_id", staff.id()).containsEntry("approver_user_id", owner.id())
                 .containsEntry("reason", "guest changed mind");

@@ -252,4 +252,4 @@ B1c — first owner of a merchant (there is no public sign-up, §8)
 
 Open questions for the owner:
 1. Make MFA required for every back-office user, or only the roles above?
-2. Add passkeys (WebAuthn) later, as Square does? Codes first either way.
+2. Add passkeys (WebAuthn) later? Codes first either way.

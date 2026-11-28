@@ -222,3 +222,34 @@ B3 — audit (`V10__audit_event.sql`)
   - (decided: the lock is per email and address, with a cap of 100 failures from all addresses together);
   - the IP limit needs the proxy's forwarded address once deployed;
   - a small timing gap between known and unknown emails.
+
+## 9. Draft — B1b two-step login (TOTP) and B1c first owner (NOT approved yet)
+
+Why first: §6 asks for MFA for OWNER and for anyone with PRICE_EDIT, TIPS_MANAGE or STAFF_MANAGE before an owner goes live. Toast and Square both offer app-based codes.
+
+B1b — TOTP (RFC 6238: SHA-1, 30 s step, 6 digits; works with Google Authenticator, 1Password and Authy)
+- Data (`V11`):
+  - `app_user` gains `mfa_secret_enc bytea`, `mfa_enabled_at`, `mfa_last_step bigint` (blocks a code being reused).
+  - `mfa_recovery_code(user_id, code_hash, used_at)`: 10 one-time codes, Argon2id.
+  - `admin_session` gains `mfa_verified_at`.
+- Secret at rest: AES-256-GCM with a key from `SQUARETOAST_MFA_KEY` (env; the app refuses to start without it once any user has MFA). Key id stored, so keys can rotate.
+- TOTP is about 30 lines of JDK `Mac` HMAC-SHA1. We check against the RFC 6238 Appendix B vectors, which avoids adding a dependency. Codes from ±1 step are accepted, compared in constant time, and the same step can't be used twice.
+- Flow:
+  1. `POST /admin/session` stays as it is. For a user with MFA, the session starts *pending*: the reply says `mfaRequired: true`, and every admin route except `POST /admin/session/mfa` and `DELETE /admin/session` returns 401 until the code is checked.
+  2. `POST /admin/session/mfa {code}` checks the code, sets `mfa_verified_at`, and rotates the session token (a new cookie).
+  3. Setup: `POST /admin/me/mfa/setup` returns the `otpauth://` URI, shown as a QR in the web page. `POST /admin/me/mfa/confirm {code}` turns it on and returns the recovery codes once.
+  4. Enforcement: a user who holds OWNER, STAFF_MANAGE, PRICE_EDIT or TIPS_MANAGE anywhere, without MFA, can only reach the setup routes (403 `mfa_setup_required` elsewhere).
+- MFA failures count toward the same per email and address lock as passwords. Every step writes an audit event (`MFA_ENABLED`, `MFA_FAILED`, `MFA_RECOVERY_USED`).
+- Tests:
+  - `TotpTest.rfc6238VectorsMatch`, `.adjacentStepAcceptedButNotReused`
+  - `MfaIT.pendingSessionReachesOnlyTheMfaRoute`, `.verifyRotatesTheCookie`, `.recoveryCodeWorksOnce`, `.ownerWithoutMfaIsSentToSetup`, `.secretNeverReturnedAfterSetup`, `.failuresCountTowardTheLoginLock`
+  - `MfaCryptoTest.tamperedCiphertextIsRejected`
+
+B1c — first owner of a merchant (there is no public sign-up, §8)
+- `./gradlew :backend:bootRun --args='--squaretoast.bootstrap.owner-email=…'` (or a one-off CLI runner) creates the owner with a random one-time setup link, stored hashed and valid 24 h. The owner sets a password and MFA on first visit.
+- No password is ever printed, logged or passed on the command line.
+- Tests: `BootstrapIT.setupLinkWorksOnceAndExpires`, `.refusesWhenMerchantAlreadyHasAnOwner`, `.neverLogsTheLink`.
+
+Open questions for the owner:
+1. Make MFA required for every back-office user, or only the roles above?
+2. Add passkeys (WebAuthn) later, as Square does? Codes first either way.

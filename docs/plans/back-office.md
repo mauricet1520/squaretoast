@@ -164,3 +164,46 @@ Order: B1–B3 first (no admin route ships without auth, scope, audit). Then cat
 - [S6] https://squareup.com/help/gb/article/6606-happy-hour-and-discounts-with-square-for-restaurants
 - [L1] https://www.dol.gov/agencies/whd/fact-sheets/15b-managers-supervisors-tips-flsa
 - [L2] https://www.dol.gov/agencies/whd/fact-sheets/15-tipped-employees-flsa
+
+## 8. B1–B3 build notes (approved by the owner 2026-11-27)
+
+Decisions taken for v1 (open questions Q1, Q4):
+- Own email + password first. **MFA (TOTP) moves to slice B1b**, before any owner goes live. SSO later.
+- Tenant isolation is checked in the app layer; Postgres row-level security is deferred.
+- Email is unique across all users (`lower(email)` unique index), so login needs no merchant picker.
+- The first owner of a merchant is created by an operator SQL/CLI step. There is no public sign-up.
+
+B1 — sessions (`V8__admin_users_sessions.sql`, package `com.squaretoast.admin`)
+- `app_user(id, merchant_id, email, display_name, password_hash, disabled_at, created_at)`.
+- `admin_session(token_hash bytea pk, user_id, csrf_hash, created_at, last_seen_at, expires_at, revoked_at)`.
+- `admin_login_attempt(email_lower, ip, at, ok)`.
+- Password hashes: Argon2id via `spring-security-crypto` + BouncyCastle, m=19456 KiB, t=2, p=1 (OWASP floor). The hash is PHC-encoded.
+- Login: `POST /api/v1/admin/session` `{email,password}`.
+  - Success sets cookie `st_admin`: 256-bit random, SHA-256 at rest, `HttpOnly; Secure; SameSite=Strict; Path=/api`. It returns `{userId, merchantId, csrfToken}`.
+  - Unknown email, wrong password and disabled user all get the same 401. An unknown email still runs one dummy hash, so timing doesn't reveal which emails exist.
+  - 5 failures for an email within 15 min, or 50 from one IP, → 429 with `Retry-After`, even when the password is right.
+- Sessions: 30 min idle, 12 h absolute. `DELETE /admin/session` revokes and clears the cookie. `GET /admin/session` returns who you are.
+- CSRF: every non-GET admin call needs `X-CSRF-Token` matching the session's token (synchronizer token).
+- Two filters, never mixed: `DeviceAuthFilter` skips `/api/*/admin/**`; `AdminAuthFilter` guards exactly those, deny by default, accepts only the cookie and ignores `Authorization`.
+
+B2 — roles and scope (`V9__roles_grants_groups.sql`)
+- `Permission` is a Java enum, mirrored by a check constraint.
+- System roles (`merchant_id` null, `system_key`) are seeded: OWNER (all), GROUP_ADMIN, GM, SHIFT_LEAD, STAFF.
+- `role_grant(id, user_id, role_id, scope_kind, scope_id, granted_by, created_at)`. Minimal `location_group` and `location_group_member` (B4 adds the API and archiving).
+- `PermissionResolver` is pure: grants + a location's merchant and groups → its permissions.
+- Admin API in this slice:
+  - `GET /admin/locations`, `GET` and `PATCH /admin/locations/{id}` (`LOCATION_EDIT`);
+  - `GET /admin/users`;
+  - `GET /admin/roles`;
+  - `POST` and `DELETE /admin/role-grants`.
+- Foreign or unknown ids → 404. Missing permission on your own merchant's location → 403.
+- To grant a role you need `STAFF_MANAGE` at that scope and every permission of the role at that scope.
+- The last OWNER grant can't be revoked.
+
+B3 — audit (`V10__audit_event.sql`)
+- `audit_event` as in §3.
+- A trigger rejects UPDATE and DELETE.
+- `AuditLog.record(...)` runs in the same transaction as the change.
+- Keys like password, pin, pan, card, cvv, token and secret are redacted from before/after.
+- Login (ok and failed), logout, location edit, grant and revoke each write exactly one event.
+- The approver is a separate column from the actor.

@@ -13,8 +13,13 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 class AdminSessions {
 
+    /** Per account and address. */
     static final int MAX_EMAIL_FAILURES = 5;
+    /** Per account, all addresses together. */
+    static final int MAX_EMAIL_FAILURES_ALL = 100;
     static final int MAX_IP_FAILURES = 50;
+
+    private record Counts(long here, long everywhere) {}
     static final int WINDOW_SECONDS = 15 * 60;
     private static final int MAX_EMAIL = 254;
     private static final int MAX_PASSWORD = 1024; // Argon2 on megabyte inputs is a cheap way to burn our CPU
@@ -48,15 +53,18 @@ class AdminSessions {
         if (!db.sql("select pg_try_advisory_xact_lock(hashtext(?))").params(key).query(Boolean.class).single()) {
             return new Limited(1);
         }
-        long emailFailures = db.sql("""
-                select count(*) from admin_login_attempt
+        // Failures since the account's last good login: from this address (a guesser locks out only itself), and
+        // from everywhere (an overall cap against guessing spread over many addresses).
+        Counts c = db.sql("""
+                select count(*) filter (where ip = ?) as here, count(*) as everywhere from admin_login_attempt
                 where email_lower = ? and not ok and at > greatest(now() - make_interval(secs => ?),
                       coalesce((select max(at) from admin_login_attempt where email_lower = ? and ok), '-infinity'))""")
-                .params(key, WINDOW_SECONDS, key).query(Long.class).single();
+                .params(ip, key, WINDOW_SECONDS, key)
+                .query((rs, n) -> new Counts(rs.getLong("here"), rs.getLong("everywhere"))).single();
         long ipFailures = db.sql("""
                 select count(*) from admin_login_attempt where ip = ? and not ok and at > now() - make_interval(secs => ?)""")
                 .params(ip, WINDOW_SECONDS).query(Long.class).single();
-        if (emailFailures >= MAX_EMAIL_FAILURES || ipFailures >= MAX_IP_FAILURES) {
+        if (c.here() >= MAX_EMAIL_FAILURES || c.everywhere() >= MAX_EMAIL_FAILURES_ALL || ipFailures >= MAX_IP_FAILURES) {
             return new Limited(WINDOW_SECONDS);
         }
 

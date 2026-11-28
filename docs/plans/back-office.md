@@ -219,6 +219,6 @@ B3 — audit (`V10__audit_event.sql`)
   - `GET /admin/users` lists only people with a grant where the caller has STAFF_MANAGE;
   - login uses `pg_try_advisory_xact_lock`, so a busy lock gives 429 at once.
 - Open, for the owner to decide:
-  - an attacker can lock an account by failing 5 times;
+  - (decided: the lock is per email and address, with a cap of 100 failures from all addresses together);
   - the IP limit needs the proxy's forwarded address once deployed;
   - a small timing gap between known and unknown emails.

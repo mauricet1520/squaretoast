@@ -54,6 +54,20 @@ object ClaimDrafts {
         }
     }
 
+    /** Plan 19.6: the location-local date the order was rung up, the date the server taxes it by. Null for a bad zone. */
+    fun saleDate(createdAtMillis: Long, timezone: String): LocalDate? = try {
+        java.time.Instant.ofEpochMilli(createdAtMillis).atZone(java.time.ZoneId.of(timezone)).toLocalDate()
+    } catch (_: java.time.DateTimeException) {
+        null
+    }
+
+    /**
+     * The server taxes an order by its sale time only within the last 72 h (plan 19.6); outside that it would use
+     * another date than the phone. One hour of margin for sync time; a sale "in the future" means the clock moved.
+     */
+    fun withinServerWindow(createdAtMillis: Long, nowMillis: Long): Boolean =
+        createdAtMillis <= nowMillis && nowMillis - createdAtMillis < 71 * 3_600_000L
+
     /** base64url(SHA-256) of "id|qty|unitCents" per line, sorted by line id, joined by newlines (S14-5). */
     fun linesDigest(lines: List<OrderLineEntity>): String {
         val text = lines.sortedBy { it.id }.joinToString("\n") { "${it.id}|${it.quantity}|${it.unitPriceCents}" }

@@ -22,6 +22,8 @@ import org.springframework.web.bind.annotation.RestController;
 class TaxProfileController {
 
     static final int WINDOW_DAYS = 7;
+    /** Plan 19.6: offline orders are taxed by their own day, and sync accepts sale times up to 72 h old. */
+    static final int LOOKBACK_DAYS = 4; // 72 h can span 4 local dates across a DST change
 
     record RuleView(String jurisdictionCode, String taxCategory, @Nullable String channel, int ratePpm,
                     String effectiveFrom, @Nullable String effectiveTo) {}
@@ -68,7 +70,7 @@ class TaxProfileController {
                 from tax_rule
                 where state_code = ? and effective_from < ? and (effective_to is null or effective_to > ?)
                 order by jurisdiction_code, tax_category, fulfillment_channel nulls first, effective_from""")
-                .params(h.state(), until, from)
+                .params(h.state(), until, from.minusDays(LOOKBACK_DAYS))
                 .query((rs, n) -> {
                     java.sql.Date to = rs.getDate("effective_to");
                     return new RuleView(rs.getString("jurisdiction_code"), rs.getString("tax_category"),

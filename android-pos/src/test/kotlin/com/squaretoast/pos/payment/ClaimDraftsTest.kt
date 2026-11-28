@@ -94,4 +94,21 @@ class ClaimDraftsTest {
         assertFalse("clock before the profile", PayCodeGate.allowed(online = false, enrolled = true, profile = profile, today = today.minusDays(1)))
         assertFalse("bad dates", PayCodeGate.allowed(online = false, enrolled = true, profile = profile.copy(validUntil = "soon"), today = today))
     }
+
+    @Test
+    fun theSaleDateIsTheLocationsLocalDateWhenTheOrderWasRungUp() {
+        // 23:59 in Los Angeles on Nov 26 is already Nov 27 in UTC: the claim must use Nov 26's rules (plan 19.6).
+        val at = java.time.ZonedDateTime.of(2026, 11, 26, 23, 59, 0, 0, java.time.ZoneId.of("America/Los_Angeles"))
+        assertEquals(LocalDate.of(2026, 11, 26), ClaimDrafts.saleDate(at.toInstant().toEpochMilli(), "America/Los_Angeles"))
+        assertNull(ClaimDrafts.saleDate(0, "Not/AZone"))
+    }
+
+    @Test
+    fun aPayCodeIsRefusedForAnOrderTheServerWouldTaxByAnotherDay() {
+        val now = 1_000_000_000_000L
+        val hour = 3_600_000L
+        assertTrue(ClaimDrafts.withinServerWindow(now - 70 * hour, now))
+        assertFalse("older than the server's 72 h clamp", ClaimDrafts.withinServerWindow(now - 72 * hour, now))
+        assertFalse("rung up 'in the future': the clock moved", ClaimDrafts.withinServerWindow(now + 60_000, now))
+    }
 }

@@ -476,7 +476,13 @@ class PosViewModel @Inject constructor(
             return@launch
         }
         val order = db.orderDao().order(orderId) ?: return@launch
-        val draft = com.squaretoast.pos.payment.ClaimDrafts.draft(order, db.orderDao().lines(orderId), profile, stored.deviceId, today)
+        if (!com.squaretoast.pos.payment.ClaimDrafts.withinServerWindow(order.createdAt, System.currentTimeMillis())) {
+            _message.value = "No pay code: this order is too old to total offline. Take payment once you're back online."
+            return@launch
+        }
+        // Taxed by the day it was rung up, as the server will (plan 19.6); the profile still has to cover today.
+        val soldOn = com.squaretoast.pos.payment.ClaimDrafts.saleDate(order.createdAt, profile.timezone) ?: today
+        val draft = com.squaretoast.pos.payment.ClaimDrafts.draft(order, db.orderDao().lines(orderId), profile, stored.deviceId, soldOn)
         if (draft == null) {
             _message.value = "No pay code: an item on this check has no tax rule on this phone."
             return@launch
